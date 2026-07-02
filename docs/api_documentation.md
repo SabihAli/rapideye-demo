@@ -179,3 +179,6 @@ This document serves as the interface specification for frontend engineers build
   1. Open a WebSocket connection for each active camera grid tile.
   2. Bind the `"frame"` string directly to the `src` attribute of a standard HTML `<img>` tag.
   3. Render the detections overlay and coordinates if doing client-side calculations, though the frame is pre-annotated on the backend (with color-coded boxes and zones) to ensure zero sync lag.
+
+
+
