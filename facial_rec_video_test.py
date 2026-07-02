@@ -5,15 +5,29 @@ Standalone facial recognition video test — FACIAL_REC.md Option B.
 Runs SCRFD + buffalo_l (InsightFace), tracks faces, matches against a gallery,
 and writes an annotated output video. No imports from demo-app server packages.
 
+Two raw videos, no labels required:
+  # 1. Build a gallery by clustering faces in an unlabelled enrollment video:
+  python build_gallery_from_dataset.py --video enroll.mp4 --output data/facial_rec/gallery_built
+  # 2. Infer on another raw video with the same people -> annotated output.mp4:
+  python facial_rec_video_test.py -i probe.mp4 \
+      --gallery data/facial_rec/gallery_built/gallery.json -o output.mp4
+
+Multi-video (batched YOLO person detection + ByteTrack + face recognition):
+  # Detect full bodies with a light YOLO model (batched across all videos in one
+  # GPU call), track with ByteTrack, attach a gallery identity via face crops.
+  # Inputs are downsampled to --target-fps; outputs are written at the same rate.
+  python facial_rec_video_test.py --inputs cam1.mp4 cam2.mp4 cam3.mp4 cam4.mp4 \
+      --gallery data/facial_rec/gallery_built/gallery.json \
+      --output-dir out/ --target-fps 20 --yolo-model yolo11n.pt
+
 Usage:
   pip install opencv-python-headless insightface onnxruntime numpy
   python facial_rec_video_test.py --input data/facial_rec/samples/P1E_S2_C1 --output out/annotated.mp4
   python facial_rec_video_test.py --input clip.mp4 --gallery data/facial_rec/gallery_built/gallery.json
 
-Gallery layout (optional):
-  gallery/
-    Alice/photo1.jpg
-    Bob/photo2.jpg
+Gallery sources:
+  - gallery.json from build_gallery_from_dataset.py (XML dataset or --video clustering)
+  - a folder of  gallery/<Name>/photo.jpg  images
 """
 
 from __future__ import annotations
@@ -125,6 +139,8 @@ class Track:
     missed: int = 0
     frames_since_label: int = 0
     detect_only: bool = False
+    # Accumulated matching confidence per identity name (temporal voting).
+    votes: dict[str, float] = field(default_factory=dict)
 
 
 def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -178,7 +194,12 @@ class FaceTracker:
                 track.missed += 1
                 track.frames_since_label += 1
         self.tracks = [t for t in self.tracks if t.missed <= self.max_missed]
-        return self.tracks
+        # Keep briefly-lost tracks internally (bridges short detection dropouts so an
+        # ID survives a flicker), but only RETURN tracks detected in this frame.
+        # Otherwise a person who leaves keeps a frozen box at their last position
+        # (the frame edge) for up to max_missed frames, and a newcomer entering near
+        # that spot inherits the stale ID/label.
+        return [t for t in self.tracks if t.missed == 0]
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +386,12 @@ def _process_one_frame(
             if best_face is None:
                 continue
             name, sim = gallery.match(best_face.embedding)
-            track.label = name
-            track.similarity = sim
+            # Temporal voting: a single frame can mislabel a face, so accumulate
+            # matching confidence per identity across the track and show the winner.
+            if name != "Unknown":
+                track.votes[name] = track.votes.get(name, 0.0) + sim
+                track.similarity = sim
+            track.label = max(track.votes, key=track.votes.get) if track.votes else "Unknown"
             track.frames_since_label = 0
 
     elapsed = time.perf_counter() - t_start
@@ -536,6 +561,248 @@ def process_video(
     }
 
 
+# ---------------------------------------------------------------------------
+# YOLO person detection + ByteTrack — batched, multi-video pipeline
+#
+# Detect full bodies with a light YOLO model (batched across all videos in one
+# GPU call), track them with ByteTrack (one tracker state per video), then run
+# InsightFace recognition on each person crop to attach a gallery identity.
+# ---------------------------------------------------------------------------
+
+
+class PersonDetector:
+    """Light YOLO person detector with batched multi-image inference."""
+
+    def __init__(self, model_path: str = "yolo11n.pt", gpu: int = 0, conf: float = 0.25):
+        from ultralytics import YOLO
+
+        self.model = YOLO(model_path)
+        self.device = gpu if gpu >= 0 else "cpu"
+        self.conf = conf
+
+    def detect_batch(
+        self, frames: list[np.ndarray]
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """One batched GPU call for all frames; return per-frame (xyxy[N,4], conf[N])."""
+        results = self.model.predict(
+            frames, classes=[0], conf=self.conf, device=self.device, verbose=False
+        )
+        out: list[tuple[np.ndarray, np.ndarray]] = []
+        for r in results:
+            b = r.boxes
+            if b is None or len(b) == 0:
+                out.append((np.zeros((0, 4), np.float32), np.zeros((0,), np.float32)))
+                continue
+            out.append(
+                (
+                    b.xyxy.cpu().numpy().astype(np.float32),
+                    b.conf.cpu().numpy().astype(np.float32),
+                )
+            )
+        return out
+
+
+class _DetAdapter:
+    """Expose (xyxy, conf) with the attribute interface BYTETracker.update expects."""
+
+    def __init__(self, xyxy: np.ndarray, conf: np.ndarray):
+        self.xyxy = xyxy.astype(np.float32)
+        self.conf = conf.astype(np.float32)
+        self.cls = np.zeros((len(conf),), np.float32)
+        x1, y1, x2, y2 = xyxy[:, 0], xyxy[:, 1], xyxy[:, 2], xyxy[:, 3]
+        self.xywh = np.stack(
+            [(x1 + x2) / 2.0, (y1 + y2) / 2.0, x2 - x1, y2 - y1], axis=1
+        ).astype(np.float32)
+
+    def __len__(self) -> int:
+        return len(self.conf)
+
+
+def make_bytetrack(frame_rate: int = 20, track_buffer: int = 30):
+    from types import SimpleNamespace
+
+    from ultralytics.trackers.byte_tracker import BYTETracker
+
+    args = SimpleNamespace(
+        track_high_thresh=0.25,
+        track_low_thresh=0.1,
+        new_track_thresh=0.25,
+        track_buffer=track_buffer,
+        match_thresh=0.8,
+        fuse_score=True,
+    )
+    return BYTETracker(args, frame_rate=frame_rate)
+
+
+def recognize_person(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    app: FaceAnalysisApp,
+    gallery: FaceGallery,
+) -> tuple[str, float] | None:
+    """Detect the largest face inside a person crop and match it to the gallery."""
+    x1, y1, x2, y2 = bbox
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+    if x2 - x1 < 12 or y2 - y1 < 12:
+        return None
+    faces = app.analyze(frame[y1:y2, x1:x2])
+    if not faces:
+        return None
+    face = max(faces, key=lambda f: f.det_score)
+    return gallery.match(face.embedding)
+
+
+class _EmitStream:
+    """Video reader that downsamples to target_fps via a frame-time accumulator."""
+
+    def __init__(self, path: str, target_fps: float):
+        self.path = path
+        self.cap = cv2.VideoCapture(path)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Cannot open input: {path}")
+        self.in_fps = self.cap.get(cv2.CAP_PROP_FPS) or target_fps
+        self.out_fps = min(self.in_fps, target_fps)
+        self.step = self.out_fps / self.in_fps  # frames kept per source frame (<=1)
+        self.accum = 0.0
+        self.ended = False
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    def next_emitted(self) -> np.ndarray | None:
+        """Return the next frame to keep after downsampling, or None at EOF."""
+        while True:
+            ok, frame = self.cap.read()
+            if not ok:
+                self.ended = True
+                return None
+            self.accum += self.step
+            if self.accum >= 1.0:
+                self.accum -= 1.0
+                return frame
+
+    def release(self) -> None:
+        self.cap.release()
+
+
+def process_videos_batched(
+    inputs: list[str],
+    out_dir: Path,
+    gallery: FaceGallery,
+    app: FaceAnalysisApp,
+    detector: PersonDetector,
+    target_fps: float = 20.0,
+    rec_interval: int = 5,
+    max_frames: int | None = None,
+    detect_only: bool = False,
+    track_buffer: int = 30,
+) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    streams = [_EmitStream(p, target_fps) for p in inputs]
+    writers: list[tuple[Path, cv2.VideoWriter]] = []
+    for p, s in zip(inputs, streams):
+        out_path = out_dir / f"annotated_{Path(p).stem}.mp4"
+        w = cv2.VideoWriter(
+            str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), s.out_fps, (s.width, s.height)
+        )
+        if not w.isOpened():
+            raise RuntimeError(f"Cannot open output writer: {out_path}")
+        writers.append((out_path, w))
+        print(f"  {Path(p).name}: {s.width}x{s.height} {s.in_fps:.0f}->{s.out_fps:.0f}fps -> {out_path.name}")
+
+    trackers = [make_bytetrack(int(round(s.out_fps)), track_buffer) for s in streams]
+    id_states: list[dict[int, dict]] = [dict() for _ in inputs]
+    frame_counts = [0] * len(inputs)
+    faces_total = [0] * len(inputs)
+    t_start = time.perf_counter()
+    total_emitted = 0
+    active = list(range(len(inputs)))
+
+    while active:
+        batch_frames: list[np.ndarray] = []
+        batch_vi: list[int] = []
+        for vi in active:
+            if max_frames is not None and frame_counts[vi] >= max_frames:
+                continue
+            frame = streams[vi].next_emitted()
+            if frame is None:
+                continue
+            batch_frames.append(frame)
+            batch_vi.append(vi)
+        active = [
+            vi
+            for vi in active
+            if not streams[vi].ended and (max_frames is None or frame_counts[vi] < max_frames)
+        ]
+        if not batch_frames:
+            break
+
+        dets_batch = detector.detect_batch(batch_frames)  # single batched GPU call
+        for frame, vi, (xyxy, conf) in zip(batch_frames, batch_vi, dets_batch):
+            tracks_arr = trackers[vi].update(_DetAdapter(xyxy, conf), frame)
+            state = id_states[vi]
+            draw_tracks: list[Track] = []
+            for row in tracks_arr:
+                x1, y1, x2, y2 = row[:4]
+                tid = int(row[4])
+                bbox = (int(x1), int(y1), int(x2), int(y2))
+                st = state.setdefault(
+                    tid, {"votes": {}, "label": "Unknown", "sim": 0.0, "seen": 0}
+                )
+                if not detect_only and st["seen"] % rec_interval == 0:
+                    res = recognize_person(frame, bbox, app, gallery)
+                    if res is not None:
+                        name, sim = res
+                        faces_total[vi] += 1
+                        if name != "Unknown":
+                            st["votes"][name] = st["votes"].get(name, 0.0) + sim
+                            st["sim"] = sim
+                        st["label"] = (
+                            max(st["votes"], key=st["votes"].get) if st["votes"] else "Unknown"
+                        )
+                st["seen"] += 1
+                draw_tracks.append(
+                    Track(
+                        track_id=tid,
+                        bbox=bbox,
+                        score=float(row[5]),
+                        label=st["label"],
+                        similarity=st["sim"],
+                        detect_only=detect_only,
+                    )
+                )
+            elapsed = time.perf_counter() - t_start
+            agg_fps = total_emitted / elapsed if elapsed > 0 else 0.0
+            annotated = draw_annotations(frame, draw_tracks, fps=agg_fps, frame_idx=frame_counts[vi])
+            writers[vi][1].write(annotated)
+            frame_counts[vi] += 1
+
+        total_emitted += len(batch_frames)
+        if total_emitted % (len(inputs) * 30) < len(inputs):
+            elapsed = time.perf_counter() - t_start
+            print(
+                f"  emitted {total_emitted} frames / {len(active)} active | "
+                f"agg_fps={total_emitted / max(elapsed, 1e-9):.1f}"
+            )
+
+    for _, w in writers:
+        w.release()
+    for s in streams:
+        s.release()
+
+    elapsed = time.perf_counter() - t_start
+    return {
+        "videos": len(inputs),
+        "frames_per_video": frame_counts,
+        "total_frames": total_emitted,
+        "seconds": round(elapsed, 2),
+        "aggregate_fps": round(total_emitted / elapsed, 2) if elapsed > 0 else 0.0,
+        "per_video_fps": [round(c / elapsed, 2) if elapsed > 0 else 0.0 for c in frame_counts],
+        "faces_recognized": faces_total,
+        "outputs": [str(p) for p, _ in writers],
+    }
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Facial recognition video test — writes annotated MP4 (FACIAL_REC.md Option B)"
@@ -543,14 +810,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--input",
         "-i",
-        required=True,
-        help="Frame folder (e.g. data/facial_rec/samples/P1E_S2_C1), video file, or 0 for webcam",
+        default=None,
+        help="Single frame folder (e.g. data/facial_rec/samples/P1E_S2_C1), video file, or 0 for webcam",
+    )
+    p.add_argument(
+        "--inputs",
+        nargs="+",
+        default=None,
+        help="Multiple videos -> batched YOLO+ByteTrack full-body recognition (e.g. --inputs a.mp4 b.mp4 c.mp4 d.mp4)",
     )
     p.add_argument(
         "--output",
         "-o",
         default="data/facial_rec/output/annotated.mp4",
-        help="Output annotated video path",
+        help="Output path (single --input mode)",
+    )
+    p.add_argument(
+        "--output-dir",
+        default="data/facial_rec/output",
+        help="Output directory (multi --inputs mode); writes annotated_<name>.mp4",
     )
     p.add_argument(
         "--gallery",
@@ -563,7 +841,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--threshold", type=float, default=0.4, help="Cosine match threshold")
     p.add_argument("--rec-interval", type=int, default=5, help="Re-recognize every N frames per track")
     p.add_argument("--fps", type=float, default=25.0, help="Output FPS when --input is a frame folder")
-    p.add_argument("--max-frames", type=int, default=None, help="Limit frames processed")
+    p.add_argument("--target-fps", type=float, default=20.0, help="Downsample input(s) to this FPS (multi --inputs mode)")
+    p.add_argument("--yolo-model", default="yolo11n.pt", help="Light YOLO model for person detection (multi mode)")
+    p.add_argument("--person-conf", type=float, default=0.25, help="YOLO person confidence threshold")
+    p.add_argument("--track-buffer", type=int, default=30, help="ByteTrack frames to keep a lost track")
+    p.add_argument("--max-frames", type=int, default=None, help="Limit frames processed (per video)")
     p.add_argument("--gpu", type=int, default=0, help="GPU device id (-1 for CPU)")
     p.add_argument(
         "--detect-only",
@@ -575,7 +857,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    output_path = Path(args.output)
+    if bool(args.input) == bool(args.inputs):
+        print("Provide exactly one of --input (single) or --inputs (multi-video YOLO).", file=sys.stderr)
+        return 2
     gallery_path = Path(args.gallery)
 
     print("Loading InsightFace", args.model, f"det={args.det_size}...")
@@ -588,6 +872,29 @@ def main() -> int:
         gallery = load_gallery(gallery_path, app, args.threshold)
     print(f"Gallery: {len(gallery.entries)} identities")
 
+    # Multi-video: batched YOLO person detection + ByteTrack + face recognition.
+    if args.inputs:
+        print(f"Loading YOLO {args.yolo_model} for batched person detection...")
+        detector = PersonDetector(model_path=args.yolo_model, gpu=args.gpu, conf=args.person_conf)
+        print(f"Batched inference over {len(args.inputs)} videos @ {args.target_fps:.0f}fps -> {args.output_dir}")
+        stats = process_videos_batched(
+            args.inputs,
+            Path(args.output_dir),
+            gallery,
+            app,
+            detector,
+            target_fps=args.target_fps,
+            rec_interval=args.rec_interval,
+            max_frames=args.max_frames,
+            detect_only=args.detect_only,
+            track_buffer=args.track_buffer,
+        )
+        print("Done.")
+        for k, v in stats.items():
+            print(f"  {k}: {v}")
+        return 0
+
+    output_path = Path(args.output)
     mode, frame_paths = resolve_input(args.input)
     print(f"Processing {args.input} -> {output_path}")
 

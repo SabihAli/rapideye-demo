@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """
-Build a face recognition gallery from ChokePoint-style datasets in data/facial_rec.
+Build a face recognition gallery from data/facial_rec — two modes.
 
-Your layout:
+MODE A — raw unlabelled video (no ground truth needed):
+  Scan a video, detect+embed every face, cluster the embeddings into distinct
+  people (unsupervised), and mean-pool each cluster into one prototype. Identities
+  are auto-named Person_1, Person_2, ... — edit display_name in gallery.json (or use
+  the saved QA crops to recognise who's who) to assign real names.
+
+    python build_gallery_from_dataset.py --video enroll.mp4 --output data/facial_rec/gallery_built
+    python facial_rec_video_test.py -i probe.mp4 \
+        --gallery data/facial_rec/gallery_built/gallery.json -o output.mp4
+
+MODE B — ChokePoint-style labelled dataset:
   data/facial_rec/samples/<SEQUENCE>/00000000.jpg ...
   data/facial_rec/samples/<SEQUENCE>/bg_img.txt   # background-only frames (skip)
   data/facial_rec/gallery/<SEQUENCE>.xml          # person id + eye landmarks per frame
 
-Strategy (does not change detection/recognition models):
-  1. Parse XML ground-truth person IDs (reliable labels — no clustering).
-  2. Exclude bg_img.txt frames (no faces).
-  3. Score each (person, frame) by face size, sharpness, and frontal pose.
-  4. Keep top-K frames per person, crop via eye landmarks, embed with InsightFace.
-  5. Mean-pool embeddings per person → one robust prototype per identity.
+  Strategy (does not change detection/recognition models):
+    1. Parse XML ground-truth person IDs (reliable labels — no clustering).
+    2. Exclude bg_img.txt frames (no faces).
+    3. Score each (person, frame) by face size, sharpness, and frontal pose.
+    4. Keep top-K frames per person, crop via eye landmarks, embed with InsightFace.
+    5. Mean-pool embeddings per person → one robust prototype per identity.
 
-Outputs:
-  data/facial_rec/gallery_built/<person_id>/enroll_*.jpg  # visual QA
-  data/facial_rec/gallery_built/gallery.json              # for facial_rec_video_test.py
+Outputs (both modes):
+  <output>/<identity_id>/enroll_*.jpg   # visual QA crops
+  <output>/gallery.json                 # for facial_rec_video_test.py
 
 Usage:
   pip install opencv-python-headless insightface onnxruntime-gpu numpy
-  python build_gallery_from_dataset.py
+  python build_gallery_from_dataset.py --video enroll.mp4
   python build_gallery_from_dataset.py --sequence P1E_S2_C1 --top-k 5
   python facial_rec_video_test.py -i ... --gallery data/facial_rec/gallery_built/gallery.json
 """
@@ -235,6 +245,187 @@ def discover_sequences(data_root: Path) -> list[str]:
     return sequences
 
 
+# ---------------------------------------------------------------------------
+# Raw video mode — build a gallery from an UNLABELLED video via clustering
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FaceRecord:
+    frame_idx: int
+    bbox: tuple[int, int, int, int]
+    det_score: float
+    embedding: np.ndarray  # L2-normalized
+    crop: np.ndarray
+
+
+def collect_faces_from_video(
+    app,
+    video_path: Path,
+    sample_every: int,
+    max_frames: int | None,
+    min_det_score: float,
+    min_face_px: int,
+) -> list[FaceRecord]:
+    """Detect + embed every face in the video (subsampled by sample_every)."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path}")
+
+    records: list[FaceRecord] = []
+    frame_idx = 0
+    try:
+        while True:
+            if max_frames is not None and frame_idx >= max_frames:
+                break
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if frame_idx % sample_every != 0:
+                frame_idx += 1
+                continue
+            h, w = frame.shape[:2]
+            for face in app.get(frame):
+                det = float(face.det_score)
+                if det < min_det_score:
+                    continue
+                x1, y1, x2, y2 = face.bbox.astype(int).tolist()
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(w, x2), min(h, y2)
+                if x2 - x1 < min_face_px or y2 - y1 < min_face_px:
+                    continue
+                emb = np.asarray(face.embedding, dtype=np.float32)
+                emb /= max(np.linalg.norm(emb), 1e-12)
+                records.append(
+                    FaceRecord(
+                        frame_idx=frame_idx,
+                        bbox=(x1, y1, x2, y2),
+                        det_score=det,
+                        embedding=emb,
+                        crop=frame[y1:y2, x1:x2].copy(),
+                    )
+                )
+            frame_idx += 1
+            if frame_idx % (sample_every * 50) == 0:
+                print(f"  scanned {frame_idx} frames, {len(records)} face crops")
+    finally:
+        cap.release()
+
+    print(f"Collected {len(records)} face crops from {frame_idx} frames")
+    return records
+
+
+def _normalize(vec: np.ndarray) -> np.ndarray:
+    return vec / max(np.linalg.norm(vec), 1e-12)
+
+
+def cluster_faces(
+    records: list[FaceRecord],
+    join_threshold: float,
+    merge_threshold: float,
+) -> list[dict]:
+    """Greedy leader clustering on cosine similarity, then a centroid merge pass.
+
+    No external deps: assign each face to the nearest existing cluster centroid if
+    similarity >= join_threshold, else start a new cluster; then fold together any
+    two clusters whose centroids are near-duplicates (handles pose/lighting drift).
+    """
+    clusters: list[dict] = []
+    for idx, rec in enumerate(records):
+        best_j, best_sim = -1, -1.0
+        for j, c in enumerate(clusters):
+            sim = float(np.dot(rec.embedding, c["centroid"]))
+            if sim > best_sim:
+                best_sim, best_j = sim, j
+        if best_j >= 0 and best_sim >= join_threshold:
+            c = clusters[best_j]
+            c["members"].append(idx)
+            c["sum"] += rec.embedding
+            c["centroid"] = _normalize(c["sum"])
+        else:
+            clusters.append(
+                {"members": [idx], "sum": rec.embedding.copy(), "centroid": rec.embedding.copy()}
+            )
+
+    merged = True
+    while merged:
+        merged = False
+        for a in range(len(clusters)):
+            for b in range(a + 1, len(clusters)):
+                if float(np.dot(clusters[a]["centroid"], clusters[b]["centroid"])) >= merge_threshold:
+                    clusters[a]["members"].extend(clusters[b]["members"])
+                    clusters[a]["sum"] += clusters[b]["sum"]
+                    clusters[a]["centroid"] = _normalize(clusters[a]["sum"])
+                    del clusters[b]
+                    merged = True
+                    break
+            if merged:
+                break
+    return clusters
+
+
+def build_gallery_from_video(
+    app,
+    video_path: Path,
+    out_dir: Path,
+    *,
+    sample_every: int,
+    max_frames: int | None,
+    min_det_score: float,
+    min_face_px: int,
+    join_threshold: float,
+    merge_threshold: float,
+    min_samples: int,
+    top_k: int,
+    name_prefix: str,
+    match_threshold: float,
+) -> dict:
+    records = collect_faces_from_video(
+        app, video_path, sample_every, max_frames, min_det_score, min_face_px
+    )
+    if not records:
+        raise RuntimeError("No faces detected in enrollment video — check the clip or lower --min-det-score.")
+
+    clusters = cluster_faces(records, join_threshold, merge_threshold)
+    kept = [c for c in clusters if len(c["members"]) >= min_samples]
+    kept.sort(key=lambda c: len(c["members"]), reverse=True)
+    print(
+        f"Clustered into {len(clusters)} groups; "
+        f"{len(kept)} identities pass min-samples={min_samples}"
+    )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    identities: list[dict] = []
+    for rank, c in enumerate(kept, start=1):
+        identity_id = f"id{rank:03d}"
+        display_name = f"{name_prefix}_{rank}"
+        prototype = _normalize(c["sum"])
+
+        # Save the highest-scoring crops for visual QA + renaming.
+        members = sorted((records[i] for i in c["members"]), key=lambda r: r.det_score, reverse=True)
+        person_dir = out_dir / identity_id
+        person_dir.mkdir(parents=True, exist_ok=True)
+        for k, rec in enumerate(members[:top_k]):
+            cv2.imwrite(str(person_dir / f"enroll_{k:02d}_f{rec.frame_idx}.jpg"), rec.crop)
+
+        identities.append(
+            {
+                "identity_id": identity_id,
+                "display_name": display_name,
+                "num_enrollment_crops": len(members),
+                "embedding": prototype.tolist(),
+            }
+        )
+        print(f"  {display_name}: {len(members)} crops (id={identity_id})")
+
+    return {
+        "threshold": match_threshold,
+        "source": "unlabelled_video_cluster",
+        "enrollment_video": str(video_path),
+        "identities": identities,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Build face gallery from ChokePoint-style dataset")
     p.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
@@ -250,11 +441,55 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Build gallery only from this sequence; useful when probing another (avoids leakage)",
     )
+
+    # Raw video mode (unlabelled) — enable by passing --video
+    v = p.add_argument_group("raw video mode (unlabelled --video)")
+    v.add_argument("--video", type=Path, default=None, help="Raw video to cluster faces from (no labels needed)")
+    v.add_argument("--sample-every", type=int, default=5, help="Process every Nth frame")
+    v.add_argument("--max-frames", type=int, default=None, help="Stop after this many frames")
+    v.add_argument("--min-det-score", type=float, default=0.5, help="Drop weak face detections")
+    v.add_argument("--min-face", type=int, default=40, help="Min face box size in px")
+    v.add_argument("--cluster-threshold", type=float, default=0.5, help="Cosine sim to join a cluster")
+    v.add_argument("--merge-threshold", type=float, default=0.6, help="Cosine sim to merge two clusters")
+    v.add_argument("--min-samples", type=int, default=5, help="Min detections to keep an identity")
+    v.add_argument("--name-prefix", default="Person", help="Auto display-name prefix (Person_1, ...)")
+    v.add_argument("--match-threshold", type=float, default=0.4, help="Match threshold written into gallery.json")
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    if args.video is not None:
+        if not args.video.is_file():
+            print(f"Video not found: {args.video}", file=sys.stderr)
+            return 1
+        print(f"Loading InsightFace {args.model}...")
+        app = load_insightface(args.model, args.det_size, args.gpu)
+        print(f"Building gallery from unlabelled video {args.video}...")
+        result = build_gallery_from_video(
+            app,
+            args.video,
+            args.output,
+            sample_every=args.sample_every,
+            max_frames=args.max_frames,
+            min_det_score=args.min_det_score,
+            min_face_px=args.min_face,
+            join_threshold=args.cluster_threshold,
+            merge_threshold=args.merge_threshold,
+            min_samples=args.min_samples,
+            top_k=args.top_k,
+            name_prefix=args.name_prefix,
+            match_threshold=args.match_threshold,
+        )
+        gallery_json = args.output / "gallery.json"
+        gallery_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        print(f"\nGallery ready: {gallery_json} ({len(result['identities'])} identities)")
+        print(f"QA crops per identity under {args.output}/<id>/ — edit display_name in the JSON for real names.")
+        print("Run inference on another raw video with the same people:")
+        print(f"  python facial_rec_video_test.py -i probe.mp4 --gallery {gallery_json} -o output.mp4")
+        return 0
+
     sequences = [args.sequence] if args.sequence else discover_sequences(args.data_root)
     if args.enroll_sequence:
         sequences = [args.enroll_sequence]
