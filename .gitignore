@@ -18,10 +18,14 @@ web/dist/
 # Runtime data
 data/models/*
 !data/models/.gitkeep
+data/models/fire_smoke_yolov5.pt
+data/models/weapons_yolov8.pt
 data/zones/*
 !data/zones/.gitkeep
 data/recordings/*
 !data/recordings/.gitkeep
+data/videos/*
+!data/videos/.gitkeep
 
 # IDE
 .idea/
