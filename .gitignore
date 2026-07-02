@@ -22,6 +22,14 @@ data/zones/*
 !data/zones/.gitkeep
 data/recordings/*
 !data/recordings/.gitkeep
+data/facial_rec/gallery.json
+data/facial_rec/output/*
+!data/facial_rec/output/.gitkeep
+data/facial_rec/gallery_built/*
+!data/facial_rec/gallery_built/.gitkeep
+data/facial_rec/samples/*
+!data/facial_rec/samples/.gitkeep
+!data/facial_rec/.gitkeep
 
 # IDE
 .idea/

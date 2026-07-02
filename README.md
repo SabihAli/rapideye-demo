@@ -16,7 +16,8 @@ This folder is a self-contained subproject:
 
 ## Status
 
-**Initialized only** — directory layout and plan are in place. Implementation follows [PLAN.md](PLAN.md) phases.
+- **Dashboard:** initialized — implementation follows [PLAN.md](PLAN.md) phases.
+- **Facial recognition:** feasibility evaluated — see [FACIAL_REC_FEASIBILITY.md](FACIAL_REC_FEASIBILITY.md). Test pipeline in `server/facial_rec/`.
 
 ## Prerequisites (target dev machine)
 
@@ -56,15 +57,42 @@ CAMERA_3_URL=...
 CAMERA_4_URL=...
 ```
 
+## Facial recognition test pipeline
+
+Spec: [FACIAL_REC.md](FACIAL_REC.md) · Feasibility: [FACIAL_REC_FEASIBILITY.md](FACIAL_REC_FEASIBILITY.md)
+
+**Standalone video test** (single file, no server imports):
+
+```bash
+pip install opencv-python-headless insightface onnxruntime-gpu numpy
+
+# 1. Build gallery from ChokePoint-style XML annotations (your dataset layout)
+python build_gallery_from_dataset.py --sequence P1E_S2_C1
+
+# 2. Run annotated video (gallery.json or folder)
+python facial_rec_video_test.py --input data/facial_rec/samples/P1E_S2_C1 --output data/facial_rec/output/annotated.mp4 --gallery data/facial_rec/gallery_built/gallery.json
+```
+
+Note: `--input` is the **frame folder** or a video file. Output is always an annotated MP4.
+
+Draws track IDs, recognized names (or `Unknown`), similarity scores, and processing FPS on the output video.
+
+Stack: **InsightFace buffalo_l** (SCRFD-10G + ArcFace) · IoU tracker · cosine gallery from folder.
+
+Legacy modular code under `server/facial_rec/` is for future dashboard integration; use `facial_rec_video_test.py` for pipeline validation.
+
 ## Directory layout
 
 ```
 demo-app/
-  PLAN.md           # full design document
-  server/           # FastAPI + inference pipeline (to be implemented)
-  web/              # React dashboard (to be implemented)
-  scripts/          # start helpers
-  data/             # models, zones, recordings (gitignored)
+  PLAN.md                    # dashboard design
+  FACIAL_REC.md              # face pipeline spec
+  FACIAL_REC_FEASIBILITY.md  # feasibility evaluation
+  server/
+    facial_rec/              # face test pipeline
+  web/                       # React dashboard (to be implemented)
+  scripts/
+  data/
 ```
 
 ## License
