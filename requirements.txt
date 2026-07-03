@@ -1,0 +1,52 @@
+# =============================================================================
+# requirements.txt — server/inference/face_recognition.py
+#
+# Pinned to the exact, verified-working set. Tested on:
+#   Python 3.13, Linux x86_64, NVIDIA GPU (driver CUDA 13.0), RTX 3090
+#
+# Install (recommended, into a fresh venv):
+#   python -m venv facialvenv
+#   ./facialvenv/bin/pip install -r requirements.txt
+#
+# ⚠️ CRITICAL — torch MUST be the CUDA-12 build (+cu126), NOT the PyPI default.
+#   YOLO (torch) and InsightFace (onnxruntime-gpu) run in ONE process and share
+#   cuDNN/NCCL. onnxruntime-gpu is built for CUDA 12, so torch must also be CUDA 12.
+#   The default `pip install torch` pulls a CUDA-13 build whose cuDNN/NCCL collide
+#   with onnxruntime-gpu's (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH /
+#   "undefined symbol: ncclCommResume"). The --extra-index-url below fixes this.
+#
+# NVIDIA CUDA/cuDNN/NCCL runtime libraries are pulled in automatically as wheels
+# by torch and onnxruntime-gpu — no system CUDA toolkit install is required.
+# =============================================================================
+
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+# --- Core (direct imports: cv2, numpy) --------------------------------------
+numpy==2.4.4
+opencv-python==5.0.0.93          # GUI build — required for --show live window.
+                                 # For headless/file-output only, swap to:
+                                 #   opencv-python-headless==5.0.0.93
+                                 # Install EXACTLY ONE opencv wheel (they share cv2).
+
+# --- Face detection + recognition (InsightFace / SCRFD + ArcFace) -----------
+insightface==1.0.1
+onnxruntime-gpu==1.26.0          # InsightFace inference backend on GPU (CUDA 12).
+                                 # Do NOT also install `onnxruntime` (CPU) — the two
+                                 # conflict. For CPU-only, use onnxruntime instead
+                                 # and run with --face-cpu / --gpu -1.
+
+# --- Person detection (YOLO) + ByteTrack ------------------------------------
+ultralytics==8.4.84              # provides YOLO + BYTETracker
+lapx==0.9.4                      # linear-assignment backend ByteTrack needs
+
+# --- Deep-learning runtime for YOLO (CUDA 12 build — see note above) --------
+torch==2.12.1+cu126
+torchvision==0.27.1+cu126
+
+# --- Optional: TensorRT engine export for YOLO (`--trt`) --------------------
+# Not required; the script falls back to PyTorch fp16 if absent. To enable:
+#   pip install tensorrt
+
+# --- Model weights (auto-downloaded on first run, not pip packages) ---------
+#   YOLO:       yolo11n.pt         -> ultralytics fetches from GitHub
+#   InsightFace: buffalo_l pack     -> insightface fetches to ~/.insightface/models
