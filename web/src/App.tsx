@@ -3,6 +3,7 @@ import { DashboardLayout } from '@/components/layout/DashboardLayout'
 import { LandingPage } from '@/pages/LandingPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { ZoneManagementPage } from '@/pages/ZoneManagementPage'
+import { RecordingsPage } from '@/pages/RecordingsPage'
 import { PlaceholderPage } from '@/pages/PlaceholderPage'
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
           <Route path="live-cameras" element={<PlaceholderPage title="Live Cameras" description="Full-screen multi-camera live view with AI overlays." />} />
           <Route path="cameras" element={<PlaceholderPage title="Camera Management" description="Add, configure, and monitor RTSP camera streams." />} />
           <Route path="zones" element={<ZoneManagementPage />} />
+          <Route path="recordings" element={<RecordingsPage />} />
           <Route path="alerts" element={<PlaceholderPage title="Alerts" description="View and manage all AI-generated security alerts." />} />
           <Route path="events" element={<PlaceholderPage title="Event Logs" description="Searchable event history with filters and clips." />} />
           <Route path="attendance" element={<PlaceholderPage title="Attendance Reports" description="AI-based attendance tracking and reports." />} />
