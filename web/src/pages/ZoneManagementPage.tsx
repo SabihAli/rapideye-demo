@@ -173,7 +173,7 @@ export function ZoneManagementPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link to="/">
+          <Link to="/dashboard">
             <Button variant="ghost" size="sm">
               <ArrowLeft className="h-4 w-4" />
             </Button>
@@ -195,14 +195,15 @@ export function ZoneManagementPage() {
         </select>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-text">{camera.name}</p>
+        <span className="text-xs text-muted">
+          {stream ? `${stream.target_fps.toFixed(1)} FPS` : 'Connecting…'}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-sm font-semibold text-text">{camera.name}</p>
-            <span className="text-xs text-muted">
-              {stream ? `${stream.target_fps.toFixed(1)} FPS` : 'Connecting…'}
-            </span>
-          </div>
           <Card className="overflow-hidden">
             <div ref={canvasRef}>
               <CameraPreview

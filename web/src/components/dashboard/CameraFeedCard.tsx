@@ -1,4 +1,5 @@
-import { Maximize2, Cpu, Circle } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Maximize2, Cpu, Circle, Square } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -12,6 +13,23 @@ import type { CameraDefinition } from '@/lib/cameras'
 
 interface CameraFeedCardProps {
   camera: CameraDefinition
+}
+
+type DetectionToggle = 'fire' | 'face' | 'weapon'
+
+const DETECTION_BUTTONS: { id: DetectionToggle; label: string }[] = [
+  { id: 'fire', label: 'fire' },
+  { id: 'face', label: 'face reco' },
+  { id: 'weapon', label: 'weapon' },
+]
+
+function formatRecordingTime(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const mm = minutes.toString().padStart(2, '0')
+  const ss = seconds.toString().padStart(2, '0')
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
 function statusVariant(status: 'Online' | 'Offline' | 'Warning') {
@@ -28,6 +46,13 @@ function statusVariant(status: 'Online' | 'Offline' | 'Warning') {
 export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const { getZonesByCamera } = useZones()
   const { getStream, isStreamConnected, health } = useDemo()
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [activeDetections, setActiveDetections] = useState<Record<DetectionToggle, boolean>>({
+    fire: false,
+    face: false,
+    weapon: false,
+  })
   const stream = getStream(camera.id)
   const zones = getZonesByCamera(camera.id)
   const { occupied, violated } = getZoneStates(zones, [])
@@ -36,6 +61,27 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const fps = stream?.target_fps ?? 0
   const latency = stream?.latency_ms ?? 0
   const isAlert = stream?.is_alert ?? false
+
+  useEffect(() => {
+    if (!isRecording) return
+    const timer = window.setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isRecording])
+
+  const handleRecordingToggle = () => {
+    if (isRecording) {
+      setIsRecording(false)
+      return
+    }
+    setRecordingSeconds(0)
+    setIsRecording(true)
+  }
+
+  const toggleDetection = (id: DetectionToggle) => {
+    setActiveDetections((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
 
   return (
     <Card
@@ -49,6 +95,12 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
             <Circle className="h-2 w-2 fill-danger" />
             LIVE
           </Badge>
+          {isRecording && (
+            <Badge variant="danger" className="animate-pulse-live gap-1 bg-black/70 font-mono tabular-nums">
+              <Circle className="h-2 w-2 fill-danger" />
+              {formatRecordingTime(recordingSeconds)}
+            </Badge>
+          )}
           {stream && (
             <span className="rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-text">
               {latency.toFixed(0)}ms
@@ -74,14 +126,53 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
         </div>
       </CameraPreview>
 
-      <div className="flex items-center justify-between border-t border-white/5 p-3">
-        <p className="truncate text-sm font-medium text-text">{camera.name}</p>
-        <Link to={`/zones?camera=${camera.id}`}>
-          <Button variant="outline" size="sm">
-            <Maximize2 className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Zones</span>
-          </Button>
-        </Link>
+      <div className="border-t border-white/5 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-medium text-text">{camera.name}</p>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant={isRecording ? 'danger' : 'outline'}
+              size="sm"
+              onClick={handleRecordingToggle}
+              aria-pressed={isRecording}
+              aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            >
+              {isRecording ? (
+                <>
+                  <Square className="h-3 w-3 fill-current" />
+                  Stop
+                </>
+              ) : (
+                <>
+                  <Circle className="h-3 w-3 fill-danger text-danger" />
+                  Record
+                </>
+              )}
+            </Button>
+            <Link to={`/zones?camera=${camera.id}`}>
+              <Button variant="outline" size="sm">
+                <Maximize2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Zones</span>
+              </Button>
+            </Link>
+          </div>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {DETECTION_BUTTONS.map(({ id, label }) => {
+            const active = activeDetections[id]
+            return (
+              <Button
+                key={id}
+                variant={active ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => toggleDetection(id)}
+                aria-pressed={active}
+              >
+                {label}
+              </Button>
+            )
+          })}
+        </div>
       </div>
     </Card>
   )

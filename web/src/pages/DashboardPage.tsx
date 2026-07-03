@@ -1,25 +1,17 @@
-import { RefreshCw } from 'lucide-react'
 import { CameraFeedCard } from '@/components/dashboard/CameraFeedCard'
 import { AlertFeed } from '@/components/dashboard/AlertFeed'
-import { Button } from '@/components/ui/Button'
 import { CAMERAS } from '@/lib/cameras'
 import { useDemo } from '@/context/DemoContext'
 
 export function DashboardPage() {
-  const { health, healthError, alerts, startDemo, startingDemo } = useDemo()
+  const { health, healthError, alerts } = useDemo()
   const onlineCount = health?.streams.filter((s) => s.is_active).length ?? 0
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-text">Security Monitor</h1>
-          <p className="text-sm text-muted">Live annotated feeds from 4 camera streams</p>
-        </div>
-        <Button onClick={startDemo} disabled={startingDemo}>
-          <RefreshCw className={`h-4 w-4 ${startingDemo ? 'animate-spin' : ''}`} />
-          {startingDemo ? 'Resetting…' : 'Start / Reset Demo'}
-        </Button>
+      <div>
+        <h1 className="text-xl font-bold text-text">Security Monitor</h1>
+        <p className="text-sm text-muted">Live annotated feeds from 4 camera streams</p>
       </div>
 
       {healthError && (
@@ -28,19 +20,18 @@ export function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
-        <div className="space-y-4 xl:col-span-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-text">Live Camera Feeds</h2>
-            <span className="text-xs text-muted">
-              {onlineCount}/{CAMERAS.length} streams active
-            </span>
-          </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {CAMERAS.map((camera) => (
-              <CameraFeedCard key={camera.id} camera={camera} />
-            ))}
-          </div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-text">Live Camera Feeds</h2>
+        <span className="text-xs text-muted">
+          {onlineCount}/{CAMERAS.length} streams active
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:col-span-3">
+          {CAMERAS.map((camera) => (
+            <CameraFeedCard key={camera.id} camera={camera} />
+          ))}
         </div>
 
         <div className="xl:sticky xl:top-6 xl:h-[calc(100vh-3rem)]">
