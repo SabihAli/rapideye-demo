@@ -49,7 +49,11 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const { getStream, isStreamConnected, health } = useDemo()
   const [isRecording, setIsRecording] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
-  const [selectedDetection, setSelectedDetection] = useState<DetectionMode | null>(null)
+  const [selectedDetections, setSelectedDetections] = useState<Record<DetectionMode, boolean>>({
+    fire: false,
+    face: false,
+    weapon: false,
+  })
   const stream = getStream(camera.id)
   const zones = getZonesByCamera(camera.id)
   const { occupied, violated } = getZoneStates(zones, [])
@@ -74,6 +78,10 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
     }
     setRecordingSeconds(0)
     setIsRecording(true)
+  }
+
+  const toggleDetection = (id: DetectionMode) => {
+    setSelectedDetections((prev) => ({ ...prev, [id]: !prev[id] }))
   }
 
   return (
@@ -151,10 +159,10 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
           </div>
         </div>
         <fieldset className="mt-2.5 border-0 border-t border-white/5 p-0 pt-2.5">
-          <legend className="sr-only">Detection mode for {camera.name}</legend>
+          <legend className="sr-only">Detection modes for {camera.name}</legend>
           <div className="grid grid-cols-3 gap-2">
             {DETECTION_OPTIONS.map(({ id, label }) => {
-              const selected = selectedDetection === id
+              const selected = selectedDetections[id]
               return (
                 <label
                   key={id}
@@ -166,12 +174,11 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
                   )}
                 >
                   <input
-                    type="radio"
-                    name={`detection-${camera.id}`}
-                    value={id}
+                    type="checkbox"
+                    name={`detection-${camera.id}-${id}`}
                     checked={selected}
-                    onChange={() => setSelectedDetection(id)}
-                    className="h-3.5 w-3.5 shrink-0 accent-white"
+                    onChange={() => toggleDetection(id)}
+                    className="h-3.5 w-3.5 shrink-0 rounded accent-white"
                   />
                   <span className="text-[10px] leading-tight">{label}</span>
                 </label>
