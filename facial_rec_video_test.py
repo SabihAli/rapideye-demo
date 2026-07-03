@@ -20,6 +20,19 @@ Multi-video (batched YOLO person detection + ByteTrack + face recognition):
       --gallery data/facial_rec/gallery_built/gallery.json \
       --output-dir out/ --target-fps 20 --yolo-model yolo11n.pt
 
+Performance (see PIPELINE_OPTIMIZATIONS.md) — implemented here:
+  - Batched detection: all cameras in one YOLO call; fp16 (--no-half to disable),
+    --imgsz to trade recall for speed, optional TensorRT engine (--trt).
+  - Threaded decode + encode overlap CPU I/O with GPU compute; --gpu-decode asks
+    ffmpeg for NVDEC hardware decode.
+  - Recognition is throttled per-track (--rec-interval), gated by person-box height
+    (--min-person-box), runs only on tracked person crops, and shares the GPU with
+    detection (--face-cpu to force CPU). Gallery matching is one vectorized matmul.
+  - --adaptive raises the rec interval under load; --log-gpu prints VRAM; the run
+    prints a per-stage timing breakdown (timings_pct) so you can see the bottleneck.
+  Not implemented (need real cameras / a bigger build): RTSP/DeepStream ingestion,
+  int8 calibration on camera footage, a separate OSNet ReID stage, CUDA-stream overlap.
+
 Usage:
   pip install opencv-python-headless insightface onnxruntime numpy
   python facial_rec_video_test.py --input data/facial_rec/samples/P1E_S2_C1 --output out/annotated.mp4
@@ -58,26 +71,40 @@ class FaceGallery:
     def __init__(self, threshold: float = 0.4):
         self.threshold = threshold
         self.entries: list[GalleryEntry] = []
+        self._matrix: np.ndarray | None = None  # (N, D) L2-normalized prototypes
+        self._names: list[str] = []
 
     def enroll(self, identity_id: str, display_name: str, embedding: np.ndarray) -> None:
         emb = embedding.astype(np.float32)
         emb /= max(np.linalg.norm(emb), 1e-12)
         self.entries = [e for e in self.entries if e.identity_id != identity_id]
         self.entries.append(GalleryEntry(identity_id, display_name, emb))
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        if self.entries:
+            self._matrix = np.stack([e.embedding for e in self.entries]).astype(np.float32)
+            self._names = [e.display_name for e in self.entries]
+        else:
+            self._matrix = None
+            self._names = []
 
     def match(self, embedding: np.ndarray) -> tuple[str, float]:
-        if not self.entries:
-            return "Unknown", 0.0
-        query = embedding.astype(np.float32)
-        query /= max(np.linalg.norm(query), 1e-12)
-        best_name = "Unknown"
-        best_sim = -1.0
-        for entry in self.entries:
-            sim = float(np.dot(query, entry.embedding))
-            if sim > best_sim:
-                best_sim = sim
-                best_name = entry.display_name if sim >= self.threshold else "Unknown"
-        return best_name, best_sim
+        return self.match_batch(embedding[None, :])[0]
+
+    def match_batch(self, embeddings: np.ndarray) -> list[tuple[str, float]]:
+        """Cosine match a stack of queries against the gallery via one matmul (opt #4)."""
+        q = np.atleast_2d(embeddings).astype(np.float32)
+        if self._matrix is None or len(q) == 0:
+            return [("Unknown", 0.0)] * len(q)
+        q /= np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
+        sims = q @ self._matrix.T  # (Q, N) — all queries vs all identities at once
+        best = sims.argmax(axis=1)
+        out: list[tuple[str, float]] = []
+        for i, j in enumerate(best):
+            s = float(sims[i, j])
+            out.append((self._names[j] if s >= self.threshold else "Unknown", s))
+        return out
 
 
 def load_gallery_from_json(gallery_path: Path, threshold: float | None = None) -> FaceGallery:
@@ -227,7 +254,13 @@ class FaceAnalysisApp:
             providers = ["CPUExecutionProvider"]
         else:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        self._app = FaceAnalysis(name=model_pack, providers=providers)
+        # We only use bbox + det_score + ArcFace embedding, so skip the 2D/3D landmark
+        # and gender-age models buffalo_l also ships — a large per-face speedup.
+        self._app = FaceAnalysis(
+            name=model_pack,
+            providers=providers,
+            allowed_modules=["detection", "recognition"],
+        )
         self._app.prepare(ctx_id=max(ctx_id, 0), det_size=det_size)
 
     def analyze(self, image_bgr: np.ndarray) -> list[AnalyzedFace]:
@@ -293,6 +326,48 @@ def draw_annotations(
             2,
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Live display (optional --show) — falls back cleanly on headless OpenCV
+# ---------------------------------------------------------------------------
+
+_SHOW_OK: bool | None = None
+
+
+def show_frame(winname: str, frame: np.ndarray) -> bool:
+    """Display a frame; return False if the user pressed 'q' (or display is dead)."""
+    global _SHOW_OK
+    if _SHOW_OK is False:
+        return True
+    try:
+        cv2.imshow(winname, frame)
+        _SHOW_OK = True
+        return (cv2.waitKey(1) & 0xFF) != ord("q")
+    except cv2.error as e:
+        if _SHOW_OK is None:
+            print(
+                f"Live display unavailable (headless OpenCV / no DISPLAY): {e}\n"
+                "Writing output file(s) only. For a window, run on a machine with a display "
+                "and `pip install opencv-python` (not -headless).",
+                file=sys.stderr,
+            )
+        _SHOW_OK = False
+        return True
+
+
+def mosaic(frames: list[np.ndarray | None], names: list[str], tile=(480, 360)) -> np.ndarray:
+    """Tile up to 4 annotated frames into a single 2x2 view for --show."""
+    tw, th = tile
+    tiles: list[np.ndarray] = []
+    for i in range(4):
+        f = frames[i] if i < len(frames) else None
+        t = np.zeros((th, tw, 3), np.uint8) if f is None else cv2.resize(f, (tw, th))
+        label = names[i] if i < len(names) else ""
+        if label:
+            cv2.putText(t, label, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        tiles.append(t)
+    return np.vstack([np.hstack(tiles[:2]), np.hstack(tiles[2:4])])
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +484,7 @@ def process_frame_sequence(
     rec_interval: int = 5,
     max_frames: int | None = None,
     detect_only: bool = False,
+    show: bool = False,
 ) -> dict:
     first = cv2.imread(str(frame_paths[0]))
     if first is None:
@@ -454,12 +530,20 @@ def process_frame_sequence(
             )
             writer.write(annotated)
             frame_idx += 1
+            if show and not show_frame("facial_rec - press q to quit", annotated):
+                print("Live view: quit requested.")
+                break
             if frame_idx % 30 == 0:
                 elapsed = time.perf_counter() - t_start
                 proc_fps = frame_idx / elapsed if elapsed > 0 else 0.0
                 print(f"  frame {frame_idx}/{limit} | proc_fps={proc_fps:.1f}")
     finally:
         writer.release()
+        if show:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
 
     elapsed = time.perf_counter() - t_start
     if first_face_frame is None:
@@ -487,6 +571,7 @@ def process_video(
     rec_interval: int = 5,
     max_frames: int | None = None,
     detect_only: bool = False,
+    show: bool = False,
 ) -> dict:
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -535,6 +620,9 @@ def process_video(
             writer.write(annotated)
             frame_idx += 1
 
+            if show and not show_frame("facial_rec - press q to quit", annotated):
+                print("Live view: quit requested.")
+                break
             if frame_idx % 30 == 0:
                 elapsed = time.perf_counter() - t_start
                 proc_fps = frame_idx / elapsed if elapsed > 0 else 0.0
@@ -542,6 +630,11 @@ def process_video(
     finally:
         cap.release()
         writer.release()
+        if show:
+            try:
+                cv2.destroyAllWindows()
+            except cv2.error:
+                pass
 
     elapsed = time.perf_counter() - t_start
     if first_face_frame is None:
@@ -571,58 +664,71 @@ def process_video(
 
 
 class PersonDetector:
-    """Light YOLO person detector with batched multi-image inference."""
+    """Light YOLO person detector: batched inference, fp16, optional TensorRT (opts #2,#7)."""
 
-    def __init__(self, model_path: str = "yolo11n.pt", gpu: int = 0, conf: float = 0.25):
+    def __init__(
+        self,
+        model_path: str = "yolo11n.pt",
+        gpu: int = 0,
+        conf: float = 0.25,
+        imgsz: int = 640,
+        half: bool = True,
+        use_trt: bool = False,
+    ):
         from ultralytics import YOLO
 
-        self.model = YOLO(model_path)
         self.device = gpu if gpu >= 0 else "cpu"
         self.conf = conf
+        self.imgsz = imgsz
+        self.half = half and gpu >= 0  # fp16 only meaningful on GPU
+        path = model_path
+        if use_trt and gpu >= 0:
+            path = self._ensure_engine(model_path, imgsz, self.half)
+        self.is_engine = str(path).endswith(".engine")
+        self.model = YOLO(path)
 
-    def detect_batch(
-        self, frames: list[np.ndarray]
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """One batched GPU call for all frames; return per-frame (xyxy[N,4], conf[N])."""
-        results = self.model.predict(
-            frames, classes=[0], conf=self.conf, device=self.device, verbose=False
-        )
-        out: list[tuple[np.ndarray, np.ndarray]] = []
-        for r in results:
-            b = r.boxes
-            if b is None or len(b) == 0:
-                out.append((np.zeros((0, 4), np.float32), np.zeros((0,), np.float32)))
-                continue
-            out.append(
-                (
-                    b.xyxy.cpu().numpy().astype(np.float32),
-                    b.conf.cpu().numpy().astype(np.float32),
-                )
+    def _ensure_engine(self, model_path: str, imgsz: int, half: bool) -> str:
+        """Build once, cache, and reuse a TensorRT engine next to the .pt (opt #2 cache)."""
+        from ultralytics import YOLO
+
+        engine = Path(model_path).with_suffix(".engine")
+        if engine.exists():
+            print(f"Using cached TensorRT engine {engine.name}")
+            return str(engine)
+        try:
+            print(f"Exporting {Path(model_path).name} -> TensorRT fp16 (one-time, minutes)...")
+            YOLO(model_path).export(
+                format="engine", half=half, imgsz=imgsz, device=self.device, batch=4
             )
-        return out
+            return str(engine) if engine.exists() else model_path
+        except Exception as e:  # tensorrt missing / build failure -> fp16 PyTorch
+            print(f"TensorRT export failed ({e}); using PyTorch fp16 instead.", file=sys.stderr)
+            return model_path
+
+    def detect_batch(self, frames: list[np.ndarray]) -> list:
+        """One batched GPU call for all frames; return per-frame ultralytics Boxes (CPU).
+
+        The Boxes object is what BYTETracker.update expects (it reads .conf/.xywh/.cls
+        and supports boolean indexing), so we hand it through directly.
+        """
+        results = self.model.predict(
+            frames,
+            classes=[0],
+            conf=self.conf,
+            imgsz=self.imgsz,
+            half=self.half,
+            device=self.device,
+            verbose=False,
+        )
+        return [r.boxes.cpu() for r in results]
 
 
-class _DetAdapter:
-    """Expose (xyxy, conf) with the attribute interface BYTETracker.update expects."""
-
-    def __init__(self, xyxy: np.ndarray, conf: np.ndarray):
-        self.xyxy = xyxy.astype(np.float32)
-        self.conf = conf.astype(np.float32)
-        self.cls = np.zeros((len(conf),), np.float32)
-        x1, y1, x2, y2 = xyxy[:, 0], xyxy[:, 1], xyxy[:, 2], xyxy[:, 3]
-        self.xywh = np.stack(
-            [(x1 + x2) / 2.0, (y1 + y2) / 2.0, x2 - x1, y2 - y1], axis=1
-        ).astype(np.float32)
-
-    def __len__(self) -> int:
-        return len(self.conf)
-
-
-def make_bytetrack(frame_rate: int = 20, track_buffer: int = 30):
+def make_bytetrack(track_buffer: int = 30):
     from types import SimpleNamespace
 
     from ultralytics.trackers.byte_tracker import BYTETracker
 
+    # Keys mirror ultralytics' default bytetrack.yaml.
     args = SimpleNamespace(
         track_high_thresh=0.25,
         track_low_thresh=0.1,
@@ -631,7 +737,7 @@ def make_bytetrack(frame_rate: int = 20, track_buffer: int = 30):
         match_thresh=0.8,
         fuse_score=True,
     )
-    return BYTETracker(args, frame_rate=frame_rate)
+    return BYTETracker(args)
 
 
 def recognize_person(
@@ -653,12 +759,26 @@ def recognize_person(
     return gallery.match(face.embedding)
 
 
+def _open_capture(path: str, hw_accel: bool) -> cv2.VideoCapture:
+    """Open a video, optionally requesting GPU/NVDEC hardware decode (opt #1)."""
+    if hw_accel:
+        try:
+            cap = cv2.VideoCapture(
+                path, cv2.CAP_FFMPEG, [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]
+            )
+            if cap.isOpened():
+                return cap
+        except (cv2.error, AttributeError):
+            pass  # older OpenCV without the enum, or no HW decoder -> CPU decode
+    return cv2.VideoCapture(path)
+
+
 class _EmitStream:
     """Video reader that downsamples to target_fps via a frame-time accumulator."""
 
-    def __init__(self, path: str, target_fps: float):
+    def __init__(self, path: str, target_fps: float, hw_accel: bool = False):
         self.path = path
-        self.cap = cv2.VideoCapture(path)
+        self.cap = _open_capture(path, hw_accel)
         if not self.cap.isOpened():
             raise RuntimeError(f"Cannot open input: {path}")
         self.in_fps = self.cap.get(cv2.CAP_PROP_FPS) or target_fps
@@ -685,6 +805,86 @@ class _EmitStream:
         self.cap.release()
 
 
+class ThreadedReader:
+    """Decode+downsample a video on a background thread so it overlaps GPU compute (opt #6).
+
+    Frames land in a bounded queue; the main loop just pops the next one. This is the
+    offline stand-in for the doc's producer/consumer ingestion pipeline.
+    """
+
+    def __init__(self, path: str, target_fps: float, hw_accel: bool = False, queue_size: int = 8):
+        import queue
+        import threading
+
+        self.stream = _EmitStream(path, target_fps, hw_accel=hw_accel)
+        self.width, self.height, self.out_fps = self.stream.width, self.stream.height, self.stream.out_fps
+        self._q: "queue.Queue" = queue.Queue(maxsize=queue_size)
+        self._stop = False
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def _run(self) -> None:
+        while not self._stop:
+            frame = self.stream.next_emitted()
+            self._q.put(frame)  # backpressure keeps all frames; None is the EOF sentinel
+            if frame is None:
+                break
+
+    def read(self) -> np.ndarray | None:
+        return self._q.get()
+
+    def release(self) -> None:
+        self._stop = True
+        try:
+            self._q.get_nowait()
+        except Exception:
+            pass
+        self.stream.release()
+
+
+class ThreadedWriter:
+    """Encode annotated frames on a background thread so mp4 muxing overlaps compute (opt #6)."""
+
+    def __init__(self, path: Path, fps: float, size: tuple[int, int], queue_size: int = 16):
+        import queue
+        import threading
+
+        self.path = path
+        self._w = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+        if not self._w.isOpened():
+            raise RuntimeError(f"Cannot open output writer: {path}")
+        self._q: "queue.Queue" = queue.Queue(maxsize=queue_size)
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def _run(self) -> None:
+        while True:
+            frame = self._q.get()
+            if frame is None:
+                break
+            self._w.write(frame)
+
+    def write(self, frame: np.ndarray) -> None:
+        self._q.put(frame)
+
+    def close(self) -> None:
+        self._q.put(None)
+        self._t.join()
+        self._w.release()
+
+
+def _gpu_mem_mb() -> float | None:
+    """Reserved GPU memory in MB, or None if torch/CUDA unavailable (opt #8 monitoring)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return torch.cuda.memory_reserved() / 1e6
+    except Exception:
+        return None
+    return None
+
+
 def process_videos_batched(
     inputs: list[str],
     out_dir: Path,
@@ -696,50 +896,61 @@ def process_videos_batched(
     max_frames: int | None = None,
     detect_only: bool = False,
     track_buffer: int = 30,
+    show: bool = False,
+    min_person_box: int = 0,
+    hw_accel: bool = False,
+    adaptive: bool = False,
+    log_gpu: bool = False,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    streams = [_EmitStream(p, target_fps) for p in inputs]
-    writers: list[tuple[Path, cv2.VideoWriter]] = []
-    for p, s in zip(inputs, streams):
-        out_path = out_dir / f"annotated_{Path(p).stem}.mp4"
-        w = cv2.VideoWriter(
-            str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), s.out_fps, (s.width, s.height)
-        )
-        if not w.isOpened():
-            raise RuntimeError(f"Cannot open output writer: {out_path}")
-        writers.append((out_path, w))
-        print(f"  {Path(p).name}: {s.width}x{s.height} {s.in_fps:.0f}->{s.out_fps:.0f}fps -> {out_path.name}")
+    n = len(inputs)
+    names = [Path(p).stem for p in inputs]
+    last_annot: list[np.ndarray | None] = [None] * n
 
-    trackers = [make_bytetrack(int(round(s.out_fps)), track_buffer) for s in streams]
+    # Threaded decode + encode so CPU I/O overlaps GPU inference (opts #1, #6).
+    readers = [ThreadedReader(p, target_fps, hw_accel=hw_accel) for p in inputs]
+    writers: list[tuple[Path, ThreadedWriter]] = []
+    for p, r in zip(inputs, readers):
+        out_path = out_dir / f"annotated_{Path(p).stem}.mp4"
+        writers.append((out_path, ThreadedWriter(out_path, r.out_fps, (r.width, r.height))))
+        print(f"  {Path(p).name}: {r.width}x{r.height} @ {r.out_fps:.0f}fps -> {out_path.name}")
+
+    trackers = [make_bytetrack(track_buffer) for _ in inputs]
     id_states: list[dict[int, dict]] = [dict() for _ in inputs]
-    frame_counts = [0] * len(inputs)
-    faces_total = [0] * len(inputs)
+    frame_counts = [0] * n
+    faces_total = [0] * n
+    timings = {"decode": 0.0, "detect": 0.0, "track": 0.0, "recognize": 0.0, "draw_write": 0.0}
     t_start = time.perf_counter()
     total_emitted = 0
-    active = list(range(len(inputs)))
+    cur_rec = max(1, rec_interval)  # adaptive throttling adjusts this (opt #8)
+    peak_gpu_mb = 0.0
+    active = set(range(n))
 
     while active:
         batch_frames: list[np.ndarray] = []
         batch_vi: list[int] = []
-        for vi in active:
+        _t = time.perf_counter()
+        for vi in sorted(active):
             if max_frames is not None and frame_counts[vi] >= max_frames:
+                active.discard(vi)
                 continue
-            frame = streams[vi].next_emitted()
+            frame = readers[vi].read()  # prefetched on a thread -> usually instant
             if frame is None:
+                active.discard(vi)
                 continue
             batch_frames.append(frame)
             batch_vi.append(vi)
-        active = [
-            vi
-            for vi in active
-            if not streams[vi].ended and (max_frames is None or frame_counts[vi] < max_frames)
-        ]
+        timings["decode"] += time.perf_counter() - _t
         if not batch_frames:
             break
 
-        dets_batch = detector.detect_batch(batch_frames)  # single batched GPU call
-        for frame, vi, (xyxy, conf) in zip(batch_frames, batch_vi, dets_batch):
-            tracks_arr = trackers[vi].update(_DetAdapter(xyxy, conf), frame)
+        _t = time.perf_counter()
+        dets_batch = detector.detect_batch(batch_frames)  # single batched GPU call (opt #3)
+        timings["detect"] += time.perf_counter() - _t
+        for frame, vi, boxes in zip(batch_frames, batch_vi, dets_batch):
+            _t = time.perf_counter()
+            tracks_arr = np.asarray(trackers[vi].update(boxes, frame))
+            timings["track"] += time.perf_counter() - _t
             state = id_states[vi]
             draw_tracks: list[Track] = []
             for row in tracks_arr:
@@ -749,8 +960,13 @@ def process_videos_batched(
                 st = state.setdefault(
                     tid, {"votes": {}, "label": "Unknown", "sim": 0.0, "seen": 0}
                 )
-                if not detect_only and st["seen"] % rec_interval == 0:
+                # Throttle recognition (opt #5) + skip person boxes too small for a
+                # reliable face match (opt #5 min-size gate).
+                big_enough = (bbox[3] - bbox[1]) >= min_person_box
+                if not detect_only and big_enough and st["seen"] % cur_rec == 0:
+                    _t = time.perf_counter()
                     res = recognize_person(frame, bbox, app, gallery)
+                    timings["recognize"] += time.perf_counter() - _t
                     if res is not None:
                         name, sim = res
                         faces_total[vi] += 1
@@ -771,34 +987,66 @@ def process_videos_batched(
                         detect_only=detect_only,
                     )
                 )
+            _t = time.perf_counter()
             elapsed = time.perf_counter() - t_start
             agg_fps = total_emitted / elapsed if elapsed > 0 else 0.0
             annotated = draw_annotations(frame, draw_tracks, fps=agg_fps, frame_idx=frame_counts[vi])
             writers[vi][1].write(annotated)
+            timings["draw_write"] += time.perf_counter() - _t
+            last_annot[vi] = annotated
             frame_counts[vi] += 1
 
         total_emitted += len(batch_frames)
-        if total_emitted % (len(inputs) * 30) < len(inputs):
+
+        # Adaptive throttle (opt #8): if we can't keep up with real-time across all
+        # streams, recognize less often before we'd ever have to drop frames.
+        if adaptive:
             elapsed = time.perf_counter() - t_start
+            proc_fps = total_emitted / max(elapsed, 1e-9)
+            target_agg = target_fps * len(active) if active else target_fps
+            if proc_fps < 0.9 * target_agg:
+                cur_rec = min(cur_rec + 1, 60)
+            elif proc_fps > 1.2 * target_agg and cur_rec > rec_interval:
+                cur_rec -= 1
+
+        if show and not show_frame("facial_rec (2x2) - press q to quit", mosaic(last_annot, names)):
+            print("Live view: quit requested.")
+            break
+        if total_emitted % (n * 30) < n:
+            elapsed = time.perf_counter() - t_start
+            mem = _gpu_mem_mb()
+            if mem:
+                peak_gpu_mb = max(peak_gpu_mb, mem)
+            extra = f" | gpu={mem:.0f}MB" if (log_gpu and mem) else ""
+            extra += f" | rec_every={cur_rec}" if adaptive else ""
             print(
-                f"  emitted {total_emitted} frames / {len(active)} active | "
-                f"agg_fps={total_emitted / max(elapsed, 1e-9):.1f}"
+                f"  emitted {total_emitted} / {len(active)} active | "
+                f"agg_fps={total_emitted / max(elapsed, 1e-9):.1f}{extra}"
             )
 
     for _, w in writers:
-        w.release()
-    for s in streams:
-        s.release()
+        w.close()
+    for r in readers:
+        r.release()
+    if show:
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass
 
     elapsed = time.perf_counter() - t_start
     return {
-        "videos": len(inputs),
+        "videos": n,
         "frames_per_video": frame_counts,
         "total_frames": total_emitted,
         "seconds": round(elapsed, 2),
         "aggregate_fps": round(total_emitted / elapsed, 2) if elapsed > 0 else 0.0,
         "per_video_fps": [round(c / elapsed, 2) if elapsed > 0 else 0.0 for c in frame_counts],
         "faces_recognized": faces_total,
+        "rec_interval_final": cur_rec,
+        "peak_gpu_mb": round(peak_gpu_mb, 1),
+        "timings_sec": {k: round(v, 2) for k, v in timings.items()},
+        "timings_pct": {k: round(100 * v / max(elapsed, 1e-9)) for k, v in timings.items()},
         "outputs": [str(p) for p, _ in writers],
     }
 
@@ -844,13 +1092,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-fps", type=float, default=20.0, help="Downsample input(s) to this FPS (multi --inputs mode)")
     p.add_argument("--yolo-model", default="yolo11n.pt", help="Light YOLO model for person detection (multi mode)")
     p.add_argument("--person-conf", type=float, default=0.25, help="YOLO person confidence threshold")
+    p.add_argument("--imgsz", type=int, default=640, help="YOLO inference size (512/640); lower is faster")
+    p.add_argument("--no-half", dest="half", action="store_false", help="Disable fp16; default is fp16 on GPU (opt #7)")
+    p.add_argument("--trt", action="store_true", help="Build/reuse a TensorRT fp16 engine for YOLO (opt #2)")
     p.add_argument("--track-buffer", type=int, default=30, help="ByteTrack frames to keep a lost track")
+    p.add_argument("--min-person-box", type=int, default=0, help="Skip face-rec for person boxes shorter than N px (opt #5)")
+    p.add_argument("--gpu-decode", action="store_true", help="Request GPU/NVDEC hardware video decode (opt #1)")
+    p.add_argument("--face-cpu", action="store_true", help="Force InsightFace onto CPU (default: same GPU as YOLO)")
+    p.add_argument("--adaptive", action="store_true", help="Auto-raise rec interval if falling behind real-time (opt #8)")
+    p.add_argument("--log-gpu", action="store_true", help="Print reserved GPU memory during the run (opt #8)")
     p.add_argument("--max-frames", type=int, default=None, help="Limit frames processed (per video)")
     p.add_argument("--gpu", type=int, default=0, help="GPU device id (-1 for CPU)")
     p.add_argument(
         "--detect-only",
         action="store_true",
         help="Detection + tracking only (no gallery matching). Use when clip has no GT.",
+    )
+    p.add_argument(
+        "--show",
+        action="store_true",
+        help="Show live annotated output in a window (2x2 mosaic for --inputs). Press q to quit.",
     )
     return p.parse_args()
 
@@ -862,8 +1123,12 @@ def main() -> int:
         return 2
     gallery_path = Path(args.gallery)
 
-    print("Loading InsightFace", args.model, f"det={args.det_size}...")
-    app = FaceAnalysisApp(model_pack=args.model, det_size=(args.det_size, args.det_size), ctx_id=args.gpu)
+    # Detection (YOLO/torch) and recognition (InsightFace/onnxruntime) share one CUDA
+    # context/process (opt #6). Use --face-cpu to force recognition onto CPU (e.g. if a
+    # torch/onnxruntime cuDNN mismatch prevents both running on the GPU together).
+    face_ctx = -1 if args.face_cpu else args.gpu
+    print("Loading InsightFace", args.model, f"det={args.det_size} on {'CPU' if face_ctx < 0 else f'GPU{face_ctx}'}...")
+    app = FaceAnalysisApp(model_pack=args.model, det_size=(args.det_size, args.det_size), ctx_id=face_ctx)
 
     if args.detect_only:
         gallery = FaceGallery(threshold=args.threshold)
@@ -874,8 +1139,15 @@ def main() -> int:
 
     # Multi-video: batched YOLO person detection + ByteTrack + face recognition.
     if args.inputs:
-        print(f"Loading YOLO {args.yolo_model} for batched person detection...")
-        detector = PersonDetector(model_path=args.yolo_model, gpu=args.gpu, conf=args.person_conf)
+        print(f"Loading YOLO {args.yolo_model} (imgsz={args.imgsz}, fp16={args.half and args.gpu >= 0}, trt={args.trt})...")
+        detector = PersonDetector(
+            model_path=args.yolo_model,
+            gpu=args.gpu,
+            conf=args.person_conf,
+            imgsz=args.imgsz,
+            half=args.half,
+            use_trt=args.trt,
+        )
         print(f"Batched inference over {len(args.inputs)} videos @ {args.target_fps:.0f}fps -> {args.output_dir}")
         stats = process_videos_batched(
             args.inputs,
@@ -888,6 +1160,11 @@ def main() -> int:
             max_frames=args.max_frames,
             detect_only=args.detect_only,
             track_buffer=args.track_buffer,
+            show=args.show,
+            min_person_box=args.min_person_box,
+            hw_accel=args.gpu_decode,
+            adaptive=args.adaptive,
+            log_gpu=args.log_gpu,
         )
         print("Done.")
         for k, v in stats.items():
@@ -908,6 +1185,7 @@ def main() -> int:
             rec_interval=args.rec_interval,
             max_frames=args.max_frames,
             detect_only=args.detect_only,
+            show=args.show,
         )
     else:
         input_src: str | int = int(args.input) if args.input.isdigit() else args.input
@@ -919,6 +1197,7 @@ def main() -> int:
             rec_interval=args.rec_interval,
             max_frames=args.max_frames,
             detect_only=args.detect_only,
+            show=args.show,
         )
     print("Done.")
     for k, v in stats.items():
