@@ -46,11 +46,19 @@ export function ZoneList({ zones, cameraName, editingZoneId, onEdit, onDelete }:
             </Badge>
           </div>
           <div className="mt-3 flex flex-wrap gap-1">
-            <Button variant="outline" size="sm" onClick={() => onEdit(zone)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => onEdit(zone)}>
               <Pencil className="h-3.5 w-3.5" />
               Edit
             </Button>
-            <Button variant="outline" size="sm" onClick={() => onDelete(zone)}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(zone)
+              }}
+            >
               <Trash2 className="h-3.5 w-3.5" />
               Remove
             </Button>

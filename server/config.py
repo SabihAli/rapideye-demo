@@ -14,18 +14,24 @@ class Settings(BaseSettings):
     model_weapon: str = "data/models/weapons_yolov8.pt"
     
     conf_entity: float = 0.5
-    conf_fire: float = 0.4
+    conf_fire: float = 0.25
     conf_weapon: float = 0.4
     person_conf: float = 0.25
     person_imgsz: int = 640
     person_use_trt: bool = True
+    weapon_imgsz: int = 640
+    weapon_half: bool = True
 
     facial_rec_interval: int = 5
+    facial_rec_interval_max: int = 30
+    adaptive_facial_throttle: bool = True
+    pipeline_lag_threshold_ms: float = 150.0
     facial_match_threshold: float = 0.4
     insightface_model: str = "buffalo_l"
     insightface_det_size: int = 640
     track_buffer: int = 30
-    min_person_box: int = 0
+    min_person_box: int = 40
+    pipeline_stats_interval_sec: float = 30.0
 
     # Inference toggles
     enable_entity_detection: bool = False

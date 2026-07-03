@@ -23,6 +23,8 @@
 # --- Core (direct imports: cv2, numpy) --------------------------------------
 numpy==2.4.4
 pandas>=2.2.0                     # required by ultralytics/yolov5 torch.hub fire model
+seaborn>=0.13.0                   # required by ultralytics/yolov5 torch.hub fire model
+gitpython>=3.1.30                 # required by ultralytics/yolov5 torch.hub fire model
 opencv-python==5.0.0.93          # GUI build — required for --show live window.
                                  # For headless/file-output only, swap to:
                                  #   opencv-python-headless==5.0.0.93

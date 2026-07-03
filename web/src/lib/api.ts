@@ -1,5 +1,6 @@
 import type {
   AlertEvent,
+  CameraModelSwitches,
   CameraRecording,
   CameraRecordingStatus,
   StreamStatus,
@@ -17,6 +18,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text()
+    try {
+      const parsed = JSON.parse(detail) as { detail?: string }
+      if (parsed.detail) throw new Error(parsed.detail)
+    } catch (err) {
+      if (err instanceof Error && err.message !== detail) throw err
+    }
     throw new Error(detail || `Request failed: ${response.status}`)
   }
 
@@ -73,4 +80,19 @@ export function getCameraRecordings(
 
 export function getAllCameraRecordings(limit = 50, offset = 0): Promise<CameraRecording[]> {
   return request(`/api/camera-recordings?limit=${limit}&offset=${offset}`)
+}
+
+export function getAllModelSwitches(): Promise<CameraModelSwitches[]> {
+  return request('/api/cameras/model-switches')
+}
+
+export function getModelSwitches(cameraId: number): Promise<CameraModelSwitches> {
+  return request(`/api/cameras/${cameraId}/model-switches`)
+}
+
+export function updateModelSwitches(config: CameraModelSwitches): Promise<CameraModelSwitches> {
+  return request(`/api/cameras/${config.camera_id}/model-switches`, {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  })
 }

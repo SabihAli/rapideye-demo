@@ -24,12 +24,17 @@ class ModelSwitchManager:
         return self._switches_dir / f"camera_{camera_id}.json"
 
     def _default_switches(self, camera_id: int) -> CameraModelSwitches:
-        return CameraModelSwitches(
-            camera_id=camera_id,
-            fire_enabled=True,
-            weapon_enabled=True,
-            face_enabled=False,
+        presets: Dict[int, Dict[str, bool]] = {
+            1: {"fire_enabled": True, "weapon_enabled": False, "face_enabled": False},
+            2: {"fire_enabled": True, "weapon_enabled": False, "face_enabled": True},
+            3: {"fire_enabled": False, "weapon_enabled": True, "face_enabled": False},
+            4: {"fire_enabled": True, "weapon_enabled": False, "face_enabled": False},
+        }
+        opts = presets.get(
+            camera_id,
+            {"fire_enabled": False, "weapon_enabled": False, "face_enabled": False},
         )
+        return CameraModelSwitches(camera_id=camera_id, **opts)
 
     def _load_all(self):
         for cam_id in range(1, 5):

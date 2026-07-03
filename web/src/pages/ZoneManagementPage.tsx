@@ -142,7 +142,7 @@ export function ZoneManagementPage() {
   const handleDelete = async (zone: Zone) => {
     if (!window.confirm(`Delete zone "${zone.name}"?`)) return
     try {
-      await deleteCameraZone(selectedCameraId)
+      await deleteCameraZone(zone.cameraId)
       if (editingZoneId === zone.id) resetForm()
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Failed to delete zone')

@@ -23,10 +23,12 @@ export function Button({
   variant = 'default',
   size = 'md',
   className,
+  type = 'button',
   ...props
 }: ButtonProps) {
   return (
     <button
+      type={type}
       className={cn(
         'inline-flex items-center justify-center gap-2 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed',
         variants[variant],

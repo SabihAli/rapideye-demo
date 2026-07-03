@@ -1,6 +1,6 @@
 {
     "camera_id": 2,
-    "fire_enabled": true,
-    "weapon_enabled": true,
-    "face_enabled": false
+    "fire_enabled": false,
+    "weapon_enabled": false,
+    "face_enabled": true
 }

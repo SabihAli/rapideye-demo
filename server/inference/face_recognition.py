@@ -342,12 +342,11 @@ def make_bytetrack(track_buffer: int = 30):
     return BYTETracker(args)
 
 
-def recognize_person(
+def _face_embedding_from_person_crop(
     frame: np.ndarray,
     bbox: tuple[int, int, int, int],
     app: FaceAnalysisApp,
-    gallery: FaceGallery,
-) -> tuple[str, float] | None:
+) -> np.ndarray | None:
     x1, y1, x2, y2 = bbox
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
@@ -357,7 +356,46 @@ def recognize_person(
     if not faces:
         return None
     face = max(faces, key=lambda f: f.det_score)
-    return gallery.match(face.embedding)
+    return face.embedding
+
+
+def recognize_person(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    app: FaceAnalysisApp,
+    gallery: FaceGallery,
+) -> tuple[str, float] | None:
+    emb = _face_embedding_from_person_crop(frame, bbox, app)
+    if emb is None:
+        return None
+    return gallery.match(emb)
+
+
+def recognize_persons_batch(
+    items: list[tuple[np.ndarray, tuple[int, int, int, int]]],
+    app: FaceAnalysisApp,
+    gallery: FaceGallery,
+) -> list[tuple[str, float] | None]:
+    """Extract embeddings from person crops and match against gallery in one batch."""
+    if not items:
+        return []
+
+    results: list[tuple[str, float] | None] = [None] * len(items)
+    embeddings: list[np.ndarray] = []
+    index_map: list[int] = []
+
+    for i, (frame, bbox) in enumerate(items):
+        emb = _face_embedding_from_person_crop(frame, bbox, app)
+        if emb is not None:
+            embeddings.append(emb)
+            index_map.append(i)
+
+    if embeddings:
+        matches = gallery.match_batch(np.stack(embeddings, axis=0))
+        for j, orig_i in enumerate(index_map):
+            results[orig_i] = matches[j]
+
+    return results
 
 
 def _open_capture(path: str, hw_accel: bool) -> cv2.VideoCapture:
@@ -950,7 +988,7 @@ def build_gallery_from_video(
     identities: list[dict] = []
     for rank, c in enumerate(kept, start=1):
         identity_id = f"id{rank:03d}"
-        display_name = f"{name_prefix}_{rank}"
+        display_name = f"{name_prefix} {rank}"
         prototype = _normalize(c["sum"])
 
         members = sorted((records[i] for i in c["members"]), key=lambda r: r.det_score, reverse=True)

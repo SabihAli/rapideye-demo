@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { getZone, updateZone as apiUpdateZone } from '@/lib/api'
 import { CAMERAS, cameraNumId } from '@/lib/cameras'
 import type { ZoneConfig } from '@/types/api'
@@ -47,18 +47,25 @@ export function ZoneProvider({ children }: { children: ReactNode }) {
   const [zones, setZones] = useState<Zone[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const loadVersionRef = useRef(0)
 
   const reloadZones = useCallback(async () => {
+    const version = ++loadVersionRef.current
     setLoading(true)
     try {
       const configs = await Promise.all(CAMERAS.map((camera) => getZone(camera.numId)))
+      if (version !== loadVersionRef.current) return
+
       const loaded = configs.map(configToZone).filter((zone): zone is Zone => zone !== null)
       setZones(loaded)
       setError(null)
     } catch (err) {
+      if (version !== loadVersionRef.current) return
       setError(err instanceof Error ? err.message : 'Failed to load zones')
     } finally {
-      setLoading(false)
+      if (version === loadVersionRef.current) {
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -73,6 +80,7 @@ export function ZoneProvider({ children }: { children: ReactNode }) {
 
   const saveCameraZone = useCallback(
     async (cameraId: string, points: Point[], alertClasses?: string[]) => {
+      loadVersionRef.current += 1
       const numId = cameraNumId(cameraId)
       const config: ZoneConfig = {
         camera_id: numId,
@@ -99,14 +107,18 @@ export function ZoneProvider({ children }: { children: ReactNode }) {
   )
 
   const deleteCameraZone = useCallback(async (cameraId: string) => {
+    loadVersionRef.current += 1
     const numId = cameraNumId(cameraId)
-    const config: ZoneConfig = {
+    const saved = await apiUpdateZone(numId, {
       camera_id: numId,
       polygon: [],
       alert_classes: [],
-    }
-    await apiUpdateZone(numId, config)
-    setZones((prev) => prev.filter((z) => z.cameraId !== cameraId))
+    })
+    const zone = configToZone(saved)
+    setZones((prev) => {
+      const withoutCamera = prev.filter((z) => z.cameraId !== cameraId)
+      return zone ? [...withoutCamera, zone] : withoutCamera
+    })
   }, [])
 
   return (

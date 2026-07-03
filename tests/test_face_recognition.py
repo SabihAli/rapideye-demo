@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ from server.inference.face_recognition import (
     cluster_faces,
     discover_sample_videos,
     parse_chokepoint_xml,
+    recognize_persons_batch,
     write_gallery_json,
 )
 
@@ -106,6 +108,31 @@ class TestParseChokepointXml:
         assert anns[0].person_id == "42"
         assert anns[0].left_eye == (10, 20)
         assert anns[0].right_eye == (30, 22)
+
+
+class TestRecognizePersonsBatch:
+    def test_batch_matches_multiple_embeddings(self):
+        gallery = FaceGallery(threshold=0.5)
+        gallery.enroll("a", "Alice", _unit_vector(8, 0))
+        gallery.enroll("b", "Bob", _unit_vector(8, 1))
+
+        app = MagicMock()
+        face_a = MagicMock()
+        face_a.det_score = 0.9
+        face_a.embedding = _unit_vector(8, 0)
+        face_b = MagicMock()
+        face_b.det_score = 0.9
+        face_b.embedding = _unit_vector(8, 1)
+        app.analyze.side_effect = [[face_a], [face_b]]
+
+        frame = np.zeros((120, 120, 3), dtype=np.uint8)
+        results = recognize_persons_batch(
+            [(frame, (10, 10, 60, 60)), (frame, (20, 20, 70, 70))],
+            app,
+            gallery,
+        )
+        assert results[0][0] == "Alice"
+        assert results[1][0] == "Bob"
 
 
 class TestWriteGalleryJson:

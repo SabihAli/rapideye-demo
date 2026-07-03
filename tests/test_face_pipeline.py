@@ -82,7 +82,7 @@ class TestFacePipelineService:
         tracker.update.return_value = np.array([[10, 20, 60, 120, 1, 0.95]])
         service._trackers[2] = tracker
         service._track_states[2] = {}
-        service._recognize_person = MagicMock(return_value=("Alice", 0.91))
+        service._recognize_persons_batch = MagicMock(return_value=[("Alice", 0.91)])
 
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         out = service.process_batch([(2, frame)])
@@ -94,3 +94,19 @@ class TestFacePipelineService:
         assert det.track_id == 1
         assert det.identity == "Alice"
         assert det.similarity == pytest.approx(0.91)
+
+    def test_adaptive_throttle_increases_interval_under_load(self):
+        service = FacePipelineService()
+        service._rec_interval_effective = 5
+        with patch("server.inference.face_pipeline.settings") as mock_settings:
+            mock_settings.adaptive_facial_throttle = True
+            mock_settings.facial_rec_interval = 5
+            mock_settings.facial_rec_interval_max = 30
+            mock_settings.pipeline_lag_threshold_ms = 150.0
+            service.report_pipeline_pressure(200.0, 2)
+        assert service.rec_interval_effective == 6
+
+    def test_should_recognize_on_init_and_interval(self):
+        assert FacePipelineService._should_recognize(0, 5) is True
+        assert FacePipelineService._should_recognize(5, 5) is True
+        assert FacePipelineService._should_recognize(3, 5) is False

@@ -48,6 +48,14 @@ class InferencePipeline:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self.clip_writer = None
+        self._stats_last_log = 0.0
+        self._stats_accum: Dict[str, float] = {
+            "fire_ms": 0.0,
+            "weapon_ms": 0.0,
+            "face_ms": 0.0,
+            "post_ms": 0.0,
+            "batches": 0.0,
+        }
 
     def start(self, clip_writer_ref=None):
         """Starts the pipeline thread."""
@@ -137,19 +145,34 @@ class InferencePipeline:
         fire_mask = [item.switches.fire_enabled for item in pending]
         weapon_mask = [item.switches.weapon_enabled for item in pending]
 
-        start_time = time.time()
+        t0 = time.perf_counter()
         fire_batch = yolo_runner.run_fire_batch(frames, fire_mask=fire_mask)
+        t_fire = time.perf_counter()
         weapon_batch = yolo_runner.run_weapon_batch(frames, weapon_mask=weapon_mask)
+        t_weapon = time.perf_counter()
 
         face_items = [
             (item.camera_id, item.frame)
             for item in pending
             if item.switches.face_enabled
         ]
-        face_batch = face_pipeline_service.process_batch(face_items)
+        target_fps_by_camera = {
+            item.camera_id: item.decoder.target_fps for item in pending if item.switches.face_enabled
+        }
+        face_batch = face_pipeline_service.process_batch(
+            face_items,
+            target_fps_by_camera=target_fps_by_camera,
+        )
+        t_face = time.perf_counter()
 
-        latency_ms = (time.time() - start_time) * 1000.0
+        latency_ms = (t_face - t0) * 1000.0
         per_camera_latency = latency_ms / max(len(pending), 1)
+        face_pipeline_service.report_pipeline_pressure(latency_ms, len(pending))
+
+        self._stats_accum["fire_ms"] += (t_fire - t0) * 1000.0
+        self._stats_accum["weapon_ms"] += (t_weapon - t_fire) * 1000.0
+        self._stats_accum["face_ms"] += (t_face - t_weapon) * 1000.0
+        self._stats_accum["batches"] += 1.0
 
         detections_by_camera: Dict[int, List[RawDetection]] = {}
         for idx, item in enumerate(pending):
@@ -161,6 +184,25 @@ class InferencePipeline:
             item.decoder._last_inference_latency_ms = per_camera_latency
 
         return detections_by_camera
+
+    def _maybe_log_pipeline_stats(self) -> None:
+        now = time.time()
+        interval = settings.pipeline_stats_interval_sec
+        if interval <= 0 or now - self._stats_last_log < interval:
+            return
+
+        batches = max(self._stats_accum["batches"], 1.0)
+        rec_every = face_pipeline_service.rec_interval_effective
+        print(
+            "[Pipeline] stage avg ms/batch — "
+            f"fire={self._stats_accum['fire_ms'] / batches:.1f} "
+            f"weapon={self._stats_accum['weapon_ms'] / batches:.1f} "
+            f"face={self._stats_accum['face_ms'] / batches:.1f} "
+            f"| rec_every={rec_every}"
+        )
+        self._stats_last_log = now
+        for key in self._stats_accum:
+            self._stats_accum[key] = 0.0
 
     def _pipeline_loop(self):
         print("[Pipeline] Main processing loop started.")
@@ -174,6 +216,7 @@ class InferencePipeline:
 
             detections_by_camera = self._run_batched_inference(pending)
 
+            t_post = time.perf_counter()
             for item in pending:
                 cam_id = item.camera_id
                 frame = item.frame
@@ -235,6 +278,9 @@ class InferencePipeline:
                     decoder.target_fps,
                     latency_ms,
                 )
+
+            self._stats_accum["post_ms"] += (time.perf_counter() - t_post) * 1000.0
+            self._maybe_log_pipeline_stats()
 
         print("[Pipeline] Process loop stopped.")
 

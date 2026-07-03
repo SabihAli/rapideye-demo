@@ -62,3 +62,10 @@ export interface CameraRecordingStatus {
   is_recording: boolean
   recording?: CameraRecording | null
 }
+
+export interface CameraModelSwitches {
+  camera_id: number
+  fire_enabled: boolean
+  weapon_enabled: boolean
+  face_enabled: boolean
+}

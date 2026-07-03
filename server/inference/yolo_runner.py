@@ -195,12 +195,9 @@ class YoloRunner:
             with torch.inference_mode():
                 batch_results = self.model_fire(active_frames)
 
-            if not isinstance(batch_results, (list, tuple)):
-                batch_results = [batch_results]
-
+            # YOLOv5 hub returns one Results object; xyxy[i] holds detections per batch image.
             for local_i, frame_i in enumerate(active_idx):
-                det_list = batch_results[local_i] if local_i < len(batch_results) else batch_results[0]
-                results[frame_i] = self._parse_yolov5_result(det_list)
+                results[frame_i] = self._parse_yolov5_result(batch_results, image_index=local_i)
         except Exception as e:
             print(f"[YoloRunner] Fire/Smoke batch inference error: {e}")
 
@@ -227,12 +224,15 @@ class YoloRunner:
 
         try:
             active_frames = [frames[i] for i in active_idx]
-            yolo_results = self.model_weapon(
-                active_frames,
-                conf=settings.conf_weapon,
-                device=self.inference_device,
-                verbose=False,
-            )
+            with torch.inference_mode():
+                yolo_results = self.model_weapon(
+                    active_frames,
+                    conf=settings.conf_weapon,
+                    imgsz=settings.weapon_imgsz,
+                    half=settings.weapon_half and self.device.type == "cuda",
+                    device=self.inference_device,
+                    verbose=False,
+                )
             if not isinstance(yolo_results, (list, tuple)):
                 yolo_results = [yolo_results]
 
@@ -285,15 +285,18 @@ class YoloRunner:
 
         return results
 
-    def _parse_yolov5_result(self, results: Any) -> List[RawDetection]:
+    def _parse_yolov5_result(self, results: Any, image_index: int = 0) -> List[RawDetection]:
         detections: List[RawDetection] = []
-        if not hasattr(results, "xyxy") or len(results.xyxy) == 0:
+        if not hasattr(results, "xyxy") or len(results.xyxy) <= image_index:
             return detections
 
         names = self.model_fire.names
-        for det in results.xyxy[0]:
+        for det in results.xyxy[image_index]:
             xmin, ymin, xmax, ymax, conf, cls_id = det.tolist()
             class_name = names[int(cls_id)] if int(cls_id) < len(names) else "fire/smoke"
+            class_key = class_name.lower()
+            if not any(token in class_key for token in ("fire", "smoke", "flame")):
+                continue
             detections.append(
                 RawDetection(
                     bbox=(xmin, ymin, xmax, ymax),
