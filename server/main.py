@@ -66,7 +66,8 @@ async def get_health():
     and individual statuses for the 4 camera feeds.
     """
     return SystemHealth(
-        gpu_available=torch.cuda.is_available(),
+        gpu_available=torch.cuda.is_available() and yolo_runner.device.type == "cuda",
+        gpu_device=yolo_runner.gpu_name,
         models_loaded=yolo_runner.loaded_models_names,
         streams=stream_manager.get_streams_status()
     )

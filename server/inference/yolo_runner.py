@@ -1,4 +1,3 @@
-import os
 import torch
 import cv2
 from typing import List, Dict, Any, Tuple
@@ -31,12 +30,13 @@ class RawDetection:
 
 class YoloRunner:
     """
-    Manages loading and running the YOLO models on the GPU.
-    Integrates Entity (YOLO11), Fire/Smoke (YOLOv5), and Weapons (YOLOv8).
+    Manages loading and running fire/smoke (YOLOv5) and weapon (YOLOv8) models on GPU.
+    Entity (COCO) detection is optional and disabled by default.
     """
     def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"[YoloRunner] Using device: {self.device}")
+        self.device = self._resolve_device()
+        self.inference_device = self._inference_device_arg()
+        self.gpu_name = self._gpu_name()
         
         self.model_entity = None
         self.model_fire = None
@@ -45,20 +45,50 @@ class YoloRunner:
         
         self._load_models()
 
+    def _resolve_device(self) -> torch.device:
+        if settings.use_cuda:
+            if not torch.cuda.is_available():
+                print("[YoloRunner] WARNING: USE_CUDA=true but CUDA is not available.")
+                print("[YoloRunner] Install GPU PyTorch, e.g.:")
+                print("  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124")
+                return torch.device("cpu")
+            idx = settings.cuda_device
+            torch.cuda.set_device(idx)
+            name = torch.cuda.get_device_name(idx)
+            print(f"[YoloRunner] Using CUDA device {idx}: {name}")
+            return torch.device(f"cuda:{idx}")
+
+        print("[YoloRunner] Using CPU (USE_CUDA=false)")
+        return torch.device("cpu")
+
+    def _inference_device_arg(self):
+        """Ultralytics accepts int GPU index or 'cpu'."""
+        if self.device.type == "cuda":
+            return self.device.index if self.device.index is not None else 0
+        return "cpu"
+
+    def _gpu_name(self) -> str | None:
+        if self.device.type != "cuda":
+            return None
+        idx = self.device.index if self.device.index is not None else 0
+        return torch.cuda.get_device_name(idx)
+
     def _load_models(self):
-        # 1. Load Entity Model (YOLOv11s/m)
-        try:
-            # If path is relative, resolve it against project_root/models_dir
-            entity_path = settings.models_dir / settings.model_entity
-            if not entity_path.parent.exists():
-                entity_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            print(f"[YoloRunner] Loading entity model from: {entity_path}")
-            self.model_entity = YOLO(str(entity_path))
-            self.model_entity.to(self.device)
-            self.loaded_models_names.append("Entity (YOLO11)")
-        except Exception as e:
-            print(f"[YoloRunner] ERROR loading Entity Model: {e}")
+        # 1. Entity model (optional — disabled by default)
+        if settings.enable_entity_detection:
+            try:
+                entity_path = settings.models_dir / settings.model_entity
+                if not entity_path.parent.exists():
+                    entity_path.parent.mkdir(parents=True, exist_ok=True)
+
+                print(f"[YoloRunner] Loading entity model from: {entity_path}")
+                self.model_entity = YOLO(str(entity_path))
+                self.model_entity.to(self.device)
+                self.loaded_models_names.append("Entity (YOLO11)")
+            except Exception as e:
+                print(f"[YoloRunner] ERROR loading Entity Model: {e}")
+        else:
+            print("[YoloRunner] Entity detection disabled (ENABLE_ENTITY_DETECTION=false)")
 
         # 2. Load Fire/Smoke Model (YOLOv5 custom)
         try:
@@ -68,14 +98,15 @@ class YoloRunner:
 
             if fire_path.exists():
                 print(f"[YoloRunner] Loading fire/smoke model from: {fire_path}")
-                # Load via PyTorch Hub (YOLOv5 repo)
                 self.model_fire = torch.hub.load(
-                    'ultralytics/yolov5', 
-                    'custom', 
-                    path=str(fire_path), 
+                    'ultralytics/yolov5',
+                    'custom',
+                    path=str(fire_path),
                     trust_repo=True
                 ).to(self.device)
                 self.model_fire.conf = settings.conf_fire
+                if self.device.type == "cuda":
+                    self.model_fire.eval()
                 self.loaded_models_names.append("Fire/Smoke (YOLOv5)")
             else:
                 print(f"[YoloRunner] WARNING: Fire/Smoke model not found at: {fire_path}")
@@ -100,16 +131,21 @@ class YoloRunner:
 
     def run_inference(self, frame: Any) -> List[RawDetection]:
         """
-        Runs the active models on the provided BGR frame and returns merged detections.
+        Runs fire/smoke and weapon models on the provided BGR frame.
+        Entity detection runs only when ENABLE_ENTITY_DETECTION=true.
         """
         detections: List[RawDetection] = []
         if frame is None:
             return detections
 
-        # 1. Run Entity Detection
-        if self.model_entity:
+        if settings.enable_entity_detection and self.model_entity:
             try:
-                results = self.model_entity(frame, conf=settings.conf_entity, device=str(self.device), verbose=False)
+                results = self.model_entity(
+                    frame,
+                    conf=settings.conf_entity,
+                    device=self.inference_device,
+                    verbose=False,
+                )
                 if results and len(results) > 0:
                     boxes = results[0].boxes
                     names = self.model_entity.names
@@ -118,7 +154,6 @@ class YoloRunner:
                         conf = float(box.conf[0])
                         cls_id = int(box.cls[0])
                         class_name = names.get(cls_id, "entity")
-                        # Add detection
                         detections.append(RawDetection(
                             bbox=(xyxy[0], xyxy[1], xyxy[2], xyxy[3]),
                             class_name=class_name,
@@ -127,14 +162,12 @@ class YoloRunner:
             except Exception as e:
                 print(f"[YoloRunner] Entity model inference error: {e}")
 
-        # 2. Run Fire/Smoke Detection
         if self.model_fire:
             try:
-                # YOLOv5 hub model expects RGB format
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = self.model_fire(frame_rgb)
-                
-                # xyxy[0] tensor contains: [xmin, ymin, xmax, ymax, confidence, class_id]
+                with torch.inference_mode():
+                    results = self.model_fire(frame_rgb)
+
                 if hasattr(results, "xyxy") and len(results.xyxy) > 0:
                     xyxy_tensor = results.xyxy[0]
                     names = self.model_fire.names
@@ -149,10 +182,14 @@ class YoloRunner:
             except Exception as e:
                 print(f"[YoloRunner] Fire/Smoke model inference error: {e}")
 
-        # 3. Run Weapons Detection
         if self.model_weapon:
             try:
-                results = self.model_weapon(frame, conf=settings.conf_weapon, device=str(self.device), verbose=False)
+                results = self.model_weapon(
+                    frame,
+                    conf=settings.conf_weapon,
+                    device=self.inference_device,
+                    verbose=False,
+                )
                 if results and len(results) > 0:
                     boxes = results[0].boxes
                     names = self.model_weapon.names

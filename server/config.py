@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     conf_entity: float = 0.5
     conf_fire: float = 0.4
     conf_weapon: float = 0.4
+
+    # Inference toggles
+    enable_entity_detection: bool = False
+    use_cuda: bool = True
+    cuda_device: int = 0
     
     base_fps: int = 15
     api_host: str = "0.0.0.0"
