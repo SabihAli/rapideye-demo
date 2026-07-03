@@ -27,9 +27,11 @@ class Settings(BaseSettings):
 
     # Paths resolved dynamically
     project_root: Path = Path(__file__).resolve().parent.parent
+    data_dir: Path = project_root / "data"
     assets_dir: Path = project_root / "assets"
     zones_dir: Path = project_root / "data" / "zones"
     recordings_dir: Path = project_root / "data" / "recordings"
+    camera_recordings_dir: Path = project_root / "data" / "recordings" / "cameras"
     models_dir: Path = project_root / "data" / "models"
 
     model_config = SettingsConfigDict(
@@ -40,9 +42,11 @@ class Settings(BaseSettings):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
         self.zones_dir.mkdir(parents=True, exist_ok=True)
         self.recordings_dir.mkdir(parents=True, exist_ok=True)
+        self.camera_recordings_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
     def get_camera_url(self, camera_id: int) -> str:

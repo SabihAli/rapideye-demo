@@ -140,13 +140,119 @@ This document serves as the interface specification for frontend engineers build
     }
   ]
   ```
+  > **Note:** `clip_path` points to an alert clip playback URL. See [Recordings](#recordings) → Alert Clips.
 
-### Download / Stream Recording Clip
+### Recordings
+
+The API supports two recording types:
+
+| Type | Trigger | Storage | Metadata |
+|------|---------|---------|----------|
+| **Alert clips** | Automatic on zone/fire/weapon detection | `data/recordings/{alert_id}.mp4` | Alert event (`clip_path` on `GET /api/alerts`) |
+| **Camera recordings** | Manual start/stop per camera | `data/recordings/cameras/camera_{n}/{id}.mp4` | SQLite (`data/rapideye_demo.db`) |
+
+`POST /api/demo/start` stops any in-progress camera recordings and clears alert history (alert clip files on disk are not deleted).
+
+---
+
+#### Alert Clips
+
+Alert clips are ~20-second MP4 files (10s pre-alert + 10s post-alert) written automatically when an alert fires. Each alert in `GET /api/alerts` includes a `clip_path` for playback once the clip has finished encoding.
+
+##### Stream / Download Alert Clip
 * **Endpoint**: `GET /api/recordings/{alert_id}`
 * **Path Parameters**:
   * `alert_id` (string, UUID): The unique alert ID from the alerts history.
-* **Description**: Streams or downloads the 20-second MP4 video clip corresponding to the given alert event. Supports HTTP byte-range requests for interactive seeking in the web player.
+* **Description**: Streams or downloads the MP4 clip for the given alert event. Returns `404` if the clip file does not exist yet (encoding may still be in progress for ~10s after the alert).
 * **Response Header**: `Content-Type: video/mp4`
+
+---
+
+#### Camera Recordings
+
+Manual per-camera recordings save raw decoded frames from the live feed to disk. Metadata (start time, duration, status, playback URL) is stored in SQLite and exposed via the endpoints below.
+
+##### Start Camera Recording
+* **Endpoint**: `POST /api/cameras/{camera_id}/recordings/start`
+* **Path Parameters**:
+  * `camera_id` (integer, 1–4)
+* **Description**: Begins saving live frames from the specified camera to an MP4 file on disk.
+* **Response Body (JSON)**:
+  ```json
+  {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "camera_id": 1,
+    "started_at": 1783062000.12,
+    "ended_at": null,
+    "duration_seconds": null,
+    "playback_url": "/api/camera-recordings/a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "file_size_bytes": null,
+    "status": "recording"
+  }
+  ```
+* **Errors**:
+  * `409 Conflict` — camera is already recording.
+
+##### Stop Camera Recording
+* **Endpoint**: `POST /api/cameras/{camera_id}/recordings/stop`
+* **Path Parameters**:
+  * `camera_id` (integer, 1–4)
+* **Description**: Stops the active recording for the camera, finalizes the MP4, and updates metadata (`ended_at`, `duration_seconds`, `file_size_bytes`, `status`).
+* **Response Body (JSON)**: Same `CameraRecording` shape as start; `status` is `completed` or `failed` (failed if no frames were captured).
+* **Errors**:
+  * `409 Conflict` — camera is not currently recording.
+
+##### Get Camera Recording Status
+* **Endpoint**: `GET /api/cameras/{camera_id}/recordings/status`
+* **Path Parameters**:
+  * `camera_id` (integer, 1–4)
+* **Description**: Returns whether the camera is actively recording and, if so, the in-progress recording metadata.
+* **Response Body (JSON)**:
+  ```json
+  {
+    "camera_id": 1,
+    "is_recording": true,
+    "recording": {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "camera_id": 1,
+      "started_at": 1783062000.12,
+      "ended_at": null,
+      "duration_seconds": null,
+      "playback_url": "/api/camera-recordings/a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "file_size_bytes": null,
+      "status": "recording"
+    }
+  }
+  ```
+  When not recording, `is_recording` is `false` and `recording` is `null`.
+
+##### List Camera Recordings (per camera)
+* **Endpoint**: `GET /api/cameras/{camera_id}/recordings`
+* **Path Parameters**:
+  * `camera_id` (integer, 1–4)
+* **Query Parameters**:
+  * `limit` (integer, default `50`, min `1`, max `100`)
+  * `offset` (integer, default `0`)
+* **Description**: Returns saved recordings for one camera, newest first.
+* **Response Body (JSON)**: Array of `CameraRecording` objects (same shape as start/stop responses).
+
+##### List All Camera Recordings
+* **Endpoint**: `GET /api/camera-recordings`
+* **Query Parameters**:
+  * `limit` (integer, default `50`, min `1`, max `100`)
+  * `offset` (integer, default `0`)
+* **Description**: Returns saved recordings across all cameras, newest first.
+* **Response Body (JSON)**: Array of `CameraRecording` objects.
+
+##### Stream / Download Camera Recording
+* **Endpoint**: `GET /api/camera-recordings/{recording_id}`
+* **Path Parameters**:
+  * `recording_id` (string, UUID): Recording ID from start/stop or list responses (`playback_url` is `/api/camera-recordings/{recording_id}`).
+* **Description**: Streams or downloads the saved camera recording MP4.
+* **Response Header**: `Content-Type: video/mp4`
+* **Errors**:
+  * `404 Not Found` — recording does not exist, file missing on disk, or status is `failed`.
+  * `409 Conflict` — recording is still in progress (`status: recording`).
 
 ---
 

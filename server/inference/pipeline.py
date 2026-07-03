@@ -11,6 +11,7 @@ from server.inference.yolo_runner import yolo_runner, RawDetection
 from server.inference.zone_engine import zone_engine
 from server.inference.scheduler import fps_scheduler
 from server.inference.annotator import Annotator
+from server.recording.camera_recorder import camera_recorder
 from server.schemas.alerts import AlertEvent, Detection
 
 class InferencePipeline:
@@ -110,6 +111,9 @@ class InferencePipeline:
 
                 processed_any = True
                 h, w, _ = frame.shape
+
+                if camera_recorder.is_recording(cam_id):
+                    camera_recorder.write_frame(cam_id, frame)
                 
                 # 1. Run YOLO Models
                 start_time = time.time()

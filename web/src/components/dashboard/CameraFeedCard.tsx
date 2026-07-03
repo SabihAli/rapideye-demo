@@ -1,4 +1,4 @@
-import { Maximize2, Cpu, Circle } from 'lucide-react'
+import { Maximize2, Cpu, Circle, Square, Disc } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -7,6 +7,7 @@ import { CameraPreview } from '@/components/camera/CameraPreview'
 import { ZoneOverlay } from '@/components/zones/ZoneOverlay'
 import { useZones } from '@/context/ZoneContext'
 import { useDemo } from '@/context/DemoContext'
+import { useCameraRecording } from '@/hooks/useCameraRecording'
 import { getZoneStates } from '@/lib/zoneUtils'
 import type { CameraDefinition } from '@/lib/cameras'
 
@@ -28,6 +29,7 @@ function statusVariant(status: 'Online' | 'Offline' | 'Warning') {
 export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const { getZonesByCamera } = useZones()
   const { getStream, isStreamConnected, health } = useDemo()
+  const { isRecording, loading: recordingLoading, start, stop } = useCameraRecording(camera.numId)
   const stream = getStream(camera.id)
   const zones = getZonesByCamera(camera.id)
   const { occupied, violated } = getZoneStates(zones, [])
@@ -49,6 +51,12 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
             <Circle className="h-2 w-2 fill-danger" />
             LIVE
           </Badge>
+          {isRecording && (
+            <Badge variant="danger" className="gap-1 bg-black/70">
+              <Disc className="h-2 w-2 fill-danger" />
+              REC
+            </Badge>
+          )}
           {stream && (
             <span className="rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-text">
               {latency.toFixed(0)}ms
@@ -74,14 +82,34 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
         </div>
       </CameraPreview>
 
-      <div className="flex items-center justify-between border-t border-white/5 p-3">
+      <div className="flex items-center justify-between gap-2 border-t border-white/5 p-3">
         <p className="truncate text-sm font-medium text-text">{camera.name}</p>
-        <Link to={`/zones?camera=${camera.id}`}>
-          <Button variant="outline" size="sm">
-            <Maximize2 className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Zones</span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={isRecording ? 'danger' : 'outline'}
+            size="sm"
+            disabled={recordingLoading || !connected}
+            onClick={() => void (isRecording ? stop() : start())}
+          >
+            {isRecording ? (
+              <>
+                <Square className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Stop</span>
+              </>
+            ) : (
+              <>
+                <Disc className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Record</span>
+              </>
+            )}
           </Button>
-        </Link>
+          <Link to={`/zones?camera=${camera.id}`}>
+            <Button variant="outline" size="sm">
+              <Maximize2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Zones</span>
+            </Button>
+          </Link>
+        </div>
       </div>
     </Card>
   )

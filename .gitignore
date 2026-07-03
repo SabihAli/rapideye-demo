@@ -24,6 +24,8 @@ data/zones/*
 !data/zones/.gitkeep
 data/recordings/*
 !data/recordings/.gitkeep
+data/recordings/cameras/**
+data/*.db
 data/videos/*
 !data/videos/.gitkeep
 

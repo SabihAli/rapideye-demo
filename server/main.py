@@ -13,12 +13,16 @@ from server.schemas.status import SystemHealth
 from server.api.routes_zones import router as zones_router
 from server.api.routes_alerts import router as alerts_router
 from server.api.routes_recordings import router as recordings_router
+from server.api.routes_camera_recordings import router as camera_recordings_router
 from server.api.ws_streams import router as ws_router
+from server.db.database import init_db, close_db
+from server.recording.camera_recorder import camera_recorder
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup Sequence
     print("[main] Starting RapidEye demo backend services...")
+    init_db()
     # 1. Start stream ingestion decoders
     stream_manager.start_all()
     # 2. Start the recording clip writer queue
@@ -35,7 +39,9 @@ async def lifespan(app: FastAPI):
     fps_scheduler.stop()
     inference_pipeline.stop()
     clip_writer.stop()
+    camera_recorder.stop_all()
     stream_manager.stop_all()
+    close_db()
 
 app = FastAPI(
     title="RapidEye Security Demo API",
@@ -57,6 +63,7 @@ app.add_middleware(
 app.include_router(zones_router)
 app.include_router(alerts_router)
 app.include_router(recordings_router)
+app.include_router(camera_recordings_router)
 app.include_router(ws_router)
 
 @app.get("/api/health", response_model=SystemHealth, tags=["System"])
@@ -88,6 +95,8 @@ async def start_demo():
     try:
         # Rewind decoders
         stream_manager.reset_all()
+        # Stop any active manual recordings
+        camera_recorder.stop_all()
         # Clear alert history
         inference_pipeline.clear_alerts()
         return {"status": "success", "message": "Demo started/reset successfully"}

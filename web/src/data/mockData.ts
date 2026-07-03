@@ -319,7 +319,7 @@ export const recentAlerts: Alert[] = [
 export const navItems = [
   { label: 'Dashboard', path: '/', icon: 'layout-dashboard' },
   { label: 'Live Cameras', path: '/live-cameras', icon: 'video' },
-  { label: 'Camera Management', path: '/cameras', icon: 'camera' },
+  { label: 'Camera Recordings', path: '/cameras', icon: 'camera' },
   { label: 'Zone Management', path: '/zones', icon: 'map' },
   { label: 'Alerts', path: '/alerts', icon: 'bell' },
   { label: 'Event Logs', path: '/events', icon: 'list' },

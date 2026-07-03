@@ -1,4 +1,11 @@
-import type { AlertEvent, StreamStatus, SystemHealth, ZoneConfig } from '@/types/api'
+import type {
+  AlertEvent,
+  CameraRecording,
+  CameraRecordingStatus,
+  StreamStatus,
+  SystemHealth,
+  ZoneConfig,
+} from '@/types/api'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 
@@ -46,4 +53,28 @@ export function startDemo(): Promise<{ status: string; message: string }> {
 export function recordingUrl(clipPath: string): string {
   if (clipPath.startsWith('http')) return clipPath
   return `${API_BASE}${clipPath}`
+}
+
+export function getCameraRecordingStatus(cameraId: number): Promise<CameraRecordingStatus> {
+  return request(`/api/cameras/${cameraId}/recordings/status`)
+}
+
+export function startCameraRecording(cameraId: number): Promise<CameraRecording> {
+  return request(`/api/cameras/${cameraId}/recordings/start`, { method: 'POST' })
+}
+
+export function stopCameraRecording(cameraId: number): Promise<CameraRecording> {
+  return request(`/api/cameras/${cameraId}/recordings/stop`, { method: 'POST' })
+}
+
+export function getCameraRecordings(
+  cameraId: number,
+  limit = 50,
+  offset = 0
+): Promise<CameraRecording[]> {
+  return request(`/api/cameras/${cameraId}/recordings?limit=${limit}&offset=${offset}`)
+}
+
+export function getAllCameraRecordings(limit = 50, offset = 0): Promise<CameraRecording[]> {
+  return request(`/api/camera-recordings?limit=${limit}&offset=${offset}`)
 }

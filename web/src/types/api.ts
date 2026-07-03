@@ -41,3 +41,20 @@ export interface AlertEvent {
   detections: ApiDetection[]
   clip_path?: string | null
 }
+
+export interface CameraRecording {
+  id: string
+  camera_id: number
+  started_at: number
+  ended_at?: number | null
+  duration_seconds?: number | null
+  playback_url: string
+  file_size_bytes?: number | null
+  status: 'recording' | 'completed' | 'failed'
+}
+
+export interface CameraRecordingStatus {
+  camera_id: number
+  is_recording: boolean
+  recording?: CameraRecording | null
+}
