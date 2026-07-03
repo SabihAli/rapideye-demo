@@ -1,12 +1,12 @@
-import { RefreshCw } from 'lucide-react'
 import { CameraFeedCard } from '@/components/dashboard/CameraFeedCard'
 import { AlertFeed } from '@/components/dashboard/AlertFeed'
-import { Button } from '@/components/ui/Button'
 import { CAMERAS } from '@/lib/cameras'
 import { useDemo } from '@/context/DemoContext'
 
+const API_PORT = import.meta.env.VITE_API_PORT ?? '8001'
+
 export function DashboardPage() {
-  const { health, healthError, alerts, startDemo, startingDemo } = useDemo()
+  const { health, healthError, alerts } = useDemo()
   const onlineCount = health?.streams.filter((s) => s.is_active).length ?? 0
 
   return (
@@ -16,15 +16,12 @@ export function DashboardPage() {
           <h1 className="text-xl font-bold text-text">Security Monitor</h1>
           <p className="text-sm text-muted">Live annotated feeds from 4 camera streams</p>
         </div>
-        <Button onClick={startDemo} disabled={startingDemo}>
-          <RefreshCw className={`h-4 w-4 ${startingDemo ? 'animate-spin' : ''}`} />
-          {startingDemo ? 'Resetting…' : 'Start / Reset Demo'}
-        </Button>
       </div>
 
       {healthError && (
         <div className="rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
-          Backend unreachable: {healthError}. Start the API server on port 8000.
+          Backend unreachable: {healthError}. Start the API server with{' '}
+          <code className="rounded bg-black/20 px-1">make backend</code> (port {API_PORT}).
         </div>
       )}
 

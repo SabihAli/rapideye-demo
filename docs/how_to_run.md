@@ -57,8 +57,8 @@ CAMERA_3_URL=assets/camera_3.mp4
 CAMERA_4_URL=assets/camera_4.mp4
 
 # Model paths (relative to project root)
-MODEL_FIRE=data/models/fire_yolo.pt
-MODEL_WEAPON=data/models/weapon_yolo.pt
+MODEL_FIRE=data/models/fire_smoke_yolov5.pt
+MODEL_WEAPON=data/models/weapons_yolov8.pt
 
 # Inference toggles
 ENABLE_ENTITY_DETECTION=false   # entity/COCO detection OFF (fire + weapon only)
@@ -82,8 +82,8 @@ The backend expects these files (create `data/models/` if missing):
 
 | File | Purpose |
 |------|---------|
-| `data/models/fire_yolo.pt` | Fire/smoke YOLOv5 weights |
-| `data/models/weapon_yolo.pt` | Weapon YOLOv8 weights |
+| `data/models/fire_smoke_yolov5.pt` | Fire/smoke YOLOv5 weights |
+| `data/models/weapons_yolov8.pt` | Weapon YOLOv8 weights |
 
 Entity weights (`yolo11m.pt` etc.) are **not needed** while `ENABLE_ENTITY_DETECTION=false`.
 

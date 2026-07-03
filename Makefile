@@ -23,7 +23,7 @@ help:
 	@echo   make venv         Create Python 3.11+ virtual environment (.venv)
 	@echo   make install      Install pinned deps from requirements.txt + editable package
 	@echo   make install-web  Install frontend npm dependencies
-	@echo   make backend      Run FastAPI backend on :8000
+	@echo   make backend      Run FastAPI backend (API_PORT from .env, default 8001)
 	@echo   make frontend     Run Vite dev server on :5173
 	@echo   make dev          Print instructions to run backend + frontend
 	@echo   make test         Run backend pytest suite
@@ -68,7 +68,7 @@ ifeq ($(OS),Windows_NT)
 else
 	@test -f $(VENV_PY) || (echo "Run make install first" && exit 1)
 endif
-	$(VENV_PY) -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
+	$(VENV_PY) -c "from server.config import settings; import subprocess, sys; raise SystemExit(subprocess.call([sys.executable, '-m', 'uvicorn', 'server.main:app', '--host', settings.api_host, '--port', str(settings.api_port), '--reload']))"
 
 frontend:
 	cd web && npm run dev

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     
     base_fps: int = 15
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 8001
 
     # Paths resolved dynamically
     project_root: Path = Path(__file__).resolve().parent.parent

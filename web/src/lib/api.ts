@@ -46,10 +46,6 @@ export function updateZone(cameraId: number, config: ZoneConfig): Promise<ZoneCo
   })
 }
 
-export function startDemo(): Promise<{ status: string; message: string }> {
-  return request('/api/demo/start', { method: 'POST' })
-}
-
 export function recordingUrl(clipPath: string): string {
   if (clipPath.startsWith('http')) return clipPath
   return `${API_BASE}${clipPath}`

@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { getAlerts, getHealth, startDemo as apiStartDemo } from '@/lib/api'
+import { getAlerts, getHealth } from '@/lib/api'
 import { useStreamSocket } from '@/hooks/useStreamSocket'
 import type { AlertEvent, StreamFrame, SystemHealth } from '@/types/api'
 
@@ -16,8 +16,6 @@ interface DemoContextValue {
   healthError: string | null
   alerts: AlertEvent[]
   refreshAlerts: () => Promise<void>
-  startDemo: () => Promise<void>
-  startingDemo: boolean
   getStream: (cameraId: string) => StreamFrame | null
   isStreamConnected: (cameraId: string) => boolean
 }
@@ -63,7 +61,6 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   const [health, setHealth] = useState<SystemHealth | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
   const [alerts, setAlerts] = useState<AlertEvent[]>([])
-  const [startingDemo, setStartingDemo] = useState(false)
   const [streams, setStreams] = useState<Map<string, StreamFrame | null>>(new Map())
   const [connected, setConnected] = useState<Map<string, boolean>>(new Map())
 
@@ -94,16 +91,6 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const startDemo = useCallback(async () => {
-    setStartingDemo(true)
-    try {
-      await apiStartDemo()
-      await Promise.all([refreshHealth(), refreshAlerts()])
-    } finally {
-      setStartingDemo(false)
-    }
-  }, [refreshAlerts, refreshHealth])
-
   useEffect(() => {
     refreshHealth()
     refreshAlerts()
@@ -121,12 +108,10 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       healthError,
       alerts,
       refreshAlerts,
-      startDemo,
-      startingDemo,
       getStream: (cameraId: string) => streams.get(cameraId) ?? null,
       isStreamConnected: (cameraId: string) => connected.get(cameraId) ?? false,
     }),
-    [health, healthError, alerts, refreshAlerts, startDemo, startingDemo, streams, connected]
+    [health, healthError, alerts, refreshAlerts, streams, connected]
   )
 
   return (
