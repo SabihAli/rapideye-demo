@@ -20,6 +20,8 @@ web/dist/
 data/*
 data/models/*
 !data/models/.gitkeep
+data/models/fire_smoke_yolov5.pt
+data/models/weapons_yolov8.pt
 data/zones/*
 !data/zones/.gitkeep
 data/recordings/*
@@ -32,6 +34,10 @@ data/facial_rec/gallery_built/*
 data/facial_rec/samples/*
 !data/facial_rec/samples/.gitkeep
 !data/facial_rec/.gitkeep
+data/recordings/cameras/**
+data/*.db
+data/videos/*
+!data/videos/.gitkeep
 
 # IDE
 .idea/
