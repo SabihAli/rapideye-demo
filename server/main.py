@@ -8,6 +8,7 @@ from server.recording.clip_writer import clip_writer
 from server.inference.pipeline import inference_pipeline
 from server.inference.scheduler import fps_scheduler
 from server.inference.yolo_runner import yolo_runner
+from server.inference.face_pipeline import face_pipeline_service
 from server.schemas.status import SystemHealth
 
 from server.api.routes_zones import router as zones_router
@@ -77,7 +78,7 @@ async def get_health():
     return SystemHealth(
         gpu_available=torch.cuda.is_available() and yolo_runner.device.type == "cuda",
         gpu_device=yolo_runner.gpu_name,
-        models_loaded=yolo_runner.loaded_models_names,
+        models_loaded=yolo_runner.loaded_models_names + face_pipeline_service.loaded_model_names,
         streams=stream_manager.get_streams_status()
     )
 

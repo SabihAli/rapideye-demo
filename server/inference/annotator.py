@@ -50,23 +50,27 @@ class Annotator:
             xmin, ymin, xmax, ymax = map(int, det.bbox)
             class_name = det.class_name.lower()
             conf = det.confidence
-            
-            # Color coding:
-            # Fire/smoke -> Orange (0, 140, 255)
-            # Weapons -> Red (0, 0, 255)
-            # Other/Entities -> Bright cyan/green (255, 255, 0)
-            if any(w in class_name for w in ["fire", "smoke"]):
+
+            if det.identity is not None:
+                if det.identity != "Unknown":
+                    box_color = (40, 200, 40)
+                else:
+                    box_color = (60, 60, 255)
+                label = f"#{det.track_id} {det.identity}" if det.track_id is not None else det.identity
+                if det.similarity and det.similarity > 0:
+                    label += f" {det.similarity:.2f}"
+            elif any(w in class_name for w in ["fire", "smoke"]):
                 box_color = (0, 140, 255)
+                label = f"{class_name} {conf:.2f}"
             elif any(w in class_name for w in ["gun", "weapon", "knife", "pistol", "handgun", "rifle"]):
                 box_color = (0, 0, 255)
+                label = f"{class_name} {conf:.2f}"
             else:
                 box_color = (255, 220, 0)
+                label = f"{class_name} {conf:.2f}"
 
-            # Draw rectangle
             cv2.rectangle(annotated_frame, (xmin, ymin), (xmax, ymax), box_color, 2, lineType=cv2.LINE_AA)
 
-            # Draw text label
-            label = f"{class_name} {conf:.2f}"
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.5
             font_thickness = 1

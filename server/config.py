@@ -9,12 +9,23 @@ class Settings(BaseSettings):
     camera_4_url: str = "assets/camera_4.mp4"
     
     model_entity: str = "yolo11s.pt"
+    model_person: str = "yolo11n.pt"
     model_fire: str = "data/models/fire_smoke_yolov5.pt"
     model_weapon: str = "data/models/weapons_yolov8.pt"
     
     conf_entity: float = 0.5
     conf_fire: float = 0.4
     conf_weapon: float = 0.4
+    person_conf: float = 0.25
+    person_imgsz: int = 640
+    person_use_trt: bool = True
+
+    facial_rec_interval: int = 5
+    facial_match_threshold: float = 0.4
+    insightface_model: str = "buffalo_l"
+    insightface_det_size: int = 640
+    track_buffer: int = 30
+    min_person_box: int = 0
 
     # Inference toggles
     enable_entity_detection: bool = False
@@ -48,6 +59,10 @@ class Settings(BaseSettings):
         self.recordings_dir.mkdir(parents=True, exist_ok=True)
         self.camera_recordings_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def facial_gallery_path(self) -> Path:
+        return self.data_dir / "facial_rec" / "gallery_built" / "gallery.json"
 
     def get_camera_url(self, camera_id: int) -> str:
         """Helper to get URL by camera_id index (1-4)."""

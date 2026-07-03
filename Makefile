@@ -1,29 +1,35 @@
 # RapidEye Demo — Makefile
 # Cross-platform helpers (Windows + Linux/macOS). Uses venv Python directly — no shell activation needed.
+#
+# Python 3.11+ is required (see requirements.txt). Override interpreter:
+#   make install PYTHON="py -3.13"
+#   make install PYTHON=python3.12
+
+PYTHON ?= python
 
 ifeq ($(OS),Windows_NT)
     VENV_PY  := .venv\Scripts\python.exe
-    VENV_PIP := .venv\Scripts\pip.exe
     RM_RF    := rmdir /s /q
 else
     VENV_PY  := .venv/bin/python
-    VENV_PIP := .venv/bin/pip
     RM_RF    := rm -rf
 endif
 
-.PHONY: help env venv install install-web backend frontend dev test clean
+.PHONY: help env check-python venv install install-web backend frontend dev test clean
 
 help:
 	@echo RapidEye Demo targets:
 	@echo   make env          Copy .env.example to .env if missing
-	@echo   make venv         Create Python virtual environment (.venv)
-	@echo   make install      Install backend Python dependencies
+	@echo   make venv         Create Python 3.11+ virtual environment (.venv)
+	@echo   make install      Install pinned deps from requirements.txt + editable package
 	@echo   make install-web  Install frontend npm dependencies
 	@echo   make backend      Run FastAPI backend on :8000
 	@echo   make frontend     Run Vite dev server on :5173
 	@echo   make dev          Print instructions to run backend + frontend
 	@echo   make test         Run backend pytest suite
 	@echo   make clean        Remove .venv and web/node_modules
+	@echo.
+	@echo Python 3.11+ required. Override: make install PYTHON="py -3.13"
 
 env:
 ifeq ($(OS),Windows_NT)
@@ -33,20 +39,35 @@ else
 endif
 	@echo .env ready
 
-venv:
-	python -m venv .venv
-	@echo Virtual environment created at .venv
+check-python:
+	@$(PYTHON) -c "import sys; v=sys.version_info; assert v>=(3,11), f'Python 3.11+ required, got {sys.version}. On Windows: make clean && make install PYTHON=py -3.13'"
 
-install: venv env
-	$(VENV_PIP) install -U pip
-	$(VENV_PIP) install -e ".[dev]"
-	@echo Backend dependencies installed
+venv: check-python
+	$(PYTHON) -m venv .venv
+	@echo Virtual environment created at .venv using $(PYTHON)
+
+install: check-python env
+ifeq ($(OS),Windows_NT)
+	@if not exist $(VENV_PY) $(PYTHON) -m venv .venv
+else
+	@test -f $(VENV_PY) || $(PYTHON) -m venv .venv
+endif
+	@$(VENV_PY) -c "import sys; v=sys.version_info; assert v>=(3,11), f'.venv uses Python {sys.version} — run make clean then make install PYTHON=py -3.13'"
+	$(VENV_PY) -m pip install -U pip setuptools wheel
+	$(VENV_PY) -m pip install -r requirements.txt
+	$(VENV_PY) -m pip install -e ".[dev]" --no-deps
+	@echo Backend dependencies installed (requirements.txt + editable vision-demo)
 
 install-web:
 	cd web && npm install
 	@echo Frontend dependencies installed
 
 backend: env
+ifeq ($(OS),Windows_NT)
+	@if not exist $(VENV_PY) (echo Run make install first && exit /b 1)
+else
+	@test -f $(VENV_PY) || (echo "Run make install first" && exit 1)
+endif
 	$(VENV_PY) -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
 
 frontend:
@@ -59,6 +80,11 @@ dev:
 	@echo Then open http://localhost:5173
 
 test: env
+ifeq ($(OS),Windows_NT)
+	@if not exist $(VENV_PY) (echo Run make install first && exit /b 1)
+else
+	@test -f $(VENV_PY) || (echo "Run make install first" && exit 1)
+endif
 	$(VENV_PY) -m pytest tests/ -v
 
 clean:

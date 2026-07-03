@@ -3,22 +3,24 @@ name = "vision-demo"
 version = "0.1.0"
 description = "Isolated RapidEye security demo dashboard (ingest + GPU inference + web UI)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.0",
-    "numpy>=1.26.0",
-    "opencv-python-headless>=4.10.0",
-    "ultralytics>=8.3.0",
 ]
 
 [project.optional-dependencies]
+# ML/GPU stack is pinned in requirements.txt — install via `make install`.
 facial = [
     "insightface>=0.7.3",
     "onnxruntime-gpu>=1.19.0; platform_system != 'Darwin'",
     "onnxruntime>=1.19.0; platform_system == 'Darwin'",
+    "lapx>=0.9.0",
+    "ultralytics>=8.3.0",
+    "numpy>=1.26.0",
+    "opencv-python>=4.10.0",
     "pynvml>=11.5.0",
 ]
 dev = [

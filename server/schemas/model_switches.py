@@ -13,5 +13,5 @@ class CameraModelSwitches(BaseModel):
     )
     face_enabled: bool = Field(
         False,
-        description="When false, face/object (entity) detection is not run for this camera.",
+        description="When true, run YOLO11n person detection + facial recognition on this camera.",
     )

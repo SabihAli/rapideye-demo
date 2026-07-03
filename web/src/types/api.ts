@@ -2,6 +2,10 @@ export interface ApiDetection {
   bbox: [number, number, number, number]
   class_name: string
   confidence: number
+  track_id?: number
+  identity?: string
+  similarity?: number
+  is_unknown?: boolean
 }
 
 export interface StreamFrame {

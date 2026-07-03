@@ -1,6 +1,6 @@
 import torch
 import cv2
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from pathlib import Path
 from ultralytics import YOLO
 from server.config import settings
@@ -8,16 +8,30 @@ from server.config import settings
 class RawDetection:
     """
     Internal representation of an object detection containing pixel coordinates.
+  Optional ``track_id`` / ``identity`` / ``similarity`` are set for person tracks
+    with facial recognition labels.
     """
-    def __init__(self, bbox: Tuple[float, float, float, float], class_name: str, confidence: float):
+    def __init__(
+        self,
+        bbox: Tuple[float, float, float, float],
+        class_name: str,
+        confidence: float,
+        *,
+        track_id: Optional[int] = None,
+        identity: Optional[str] = None,
+        similarity: Optional[float] = None,
+    ):
         self.bbox = bbox  # (xmin, ymin, xmax, ymax) in pixel coordinates
         self.class_name = class_name
         self.confidence = confidence
+        self.track_id = track_id
+        self.identity = identity
+        self.similarity = similarity
 
     def to_normalized(self, img_w: int, img_h: int) -> Dict[str, Any]:
         """Normalizes the bounding box coords to [0.0, 1.0] range."""
         xmin, ymin, xmax, ymax = self.bbox
-        return {
+        payload: Dict[str, Any] = {
             "bbox": [
                 max(0.0, min(float(xmin) / img_w, 1.0)),
                 max(0.0, min(float(ymin) / img_h, 1.0)),
@@ -25,8 +39,16 @@ class RawDetection:
                 max(0.0, min(float(ymax) / img_h, 1.0)),
             ],
             "class_name": self.class_name,
-            "confidence": float(self.confidence)
+            "confidence": float(self.confidence),
         }
+        if self.track_id is not None:
+            payload["track_id"] = self.track_id
+        if self.identity is not None:
+            payload["identity"] = self.identity
+            payload["is_unknown"] = self.identity == "Unknown"
+        if self.similarity is not None:
+            payload["similarity"] = float(self.similarity)
+        return payload
 
 class YoloRunner:
     """
@@ -135,85 +157,178 @@ class YoloRunner:
         *,
         fire_enabled: bool = True,
         weapon_enabled: bool = True,
-        face_enabled: bool = True,
     ) -> List[RawDetection]:
         """
-        Runs enabled models on the provided BGR frame.
-        Entity detection additionally requires ENABLE_ENTITY_DETECTION=true at startup.
+        Runs enabled models on a single BGR frame.
+        Entity detection requires ENABLE_ENTITY_DETECTION=true at startup.
+        Facial recognition is handled separately by face_pipeline_service.
         """
+        fire = self.run_fire_batch([frame], fire_mask=[fire_enabled])[0]
+        weapon = self.run_weapon_batch([frame], weapon_mask=[weapon_enabled])[0]
+        entity = self.run_entity_batch(
+            [frame],
+            entity_mask=[settings.enable_entity_detection],
+        )[0]
+        return fire + weapon + entity
+
+    def run_fire_batch(
+        self,
+        frames: List[Any],
+        fire_mask: List[bool] | None = None,
+    ) -> List[List[RawDetection]]:
+        """Batch fire/smoke inference. Skips frames where mask entry is False."""
+        n = len(frames)
+        if n == 0:
+            return []
+        mask = fire_mask if fire_mask is not None else [True] * n
+        results: List[List[RawDetection]] = [[] for _ in range(n)]
+
+        if not self.model_fire or not any(mask):
+            return results
+
+        active_idx = [i for i in range(n) if mask[i] and frames[i] is not None]
+        if not active_idx:
+            return results
+
+        try:
+            active_frames = [cv2.cvtColor(frames[i], cv2.COLOR_BGR2RGB) for i in active_idx]
+            with torch.inference_mode():
+                batch_results = self.model_fire(active_frames)
+
+            if not isinstance(batch_results, (list, tuple)):
+                batch_results = [batch_results]
+
+            for local_i, frame_i in enumerate(active_idx):
+                det_list = batch_results[local_i] if local_i < len(batch_results) else batch_results[0]
+                results[frame_i] = self._parse_yolov5_result(det_list)
+        except Exception as e:
+            print(f"[YoloRunner] Fire/Smoke batch inference error: {e}")
+
+        return results
+
+    def run_weapon_batch(
+        self,
+        frames: List[Any],
+        weapon_mask: List[bool] | None = None,
+    ) -> List[List[RawDetection]]:
+        """Batch weapon inference via Ultralytics YOLO."""
+        n = len(frames)
+        if n == 0:
+            return []
+        mask = weapon_mask if weapon_mask is not None else [True] * n
+        results: List[List[RawDetection]] = [[] for _ in range(n)]
+
+        if not self.model_weapon or not any(mask):
+            return results
+
+        active_idx = [i for i in range(n) if mask[i] and frames[i] is not None]
+        if not active_idx:
+            return results
+
+        try:
+            active_frames = [frames[i] for i in active_idx]
+            yolo_results = self.model_weapon(
+                active_frames,
+                conf=settings.conf_weapon,
+                device=self.inference_device,
+                verbose=False,
+            )
+            if not isinstance(yolo_results, (list, tuple)):
+                yolo_results = [yolo_results]
+
+            for local_i, frame_i in enumerate(active_idx):
+                result = yolo_results[local_i]
+                results[frame_i] = self._parse_ultralytics_boxes(result)
+        except Exception as e:
+            print(f"[YoloRunner] Weapons batch inference error: {e}")
+
+        return results
+
+    def run_entity_batch(
+        self,
+        frames: List[Any],
+        entity_mask: List[bool] | None = None,
+    ) -> List[List[RawDetection]]:
+        """Batch COCO entity inference (optional, env-gated)."""
+        n = len(frames)
+        if n == 0:
+            return []
+        mask = entity_mask if entity_mask is not None else [True] * n
+        results: List[List[RawDetection]] = [[] for _ in range(n)]
+
+        if not settings.enable_entity_detection or not self.model_entity or not any(mask):
+            return results
+
+        active_idx = [i for i in range(n) if mask[i] and frames[i] is not None]
+        if not active_idx:
+            return results
+
+        try:
+            active_frames = [frames[i] for i in active_idx]
+            yolo_results = self.model_entity(
+                active_frames,
+                conf=settings.conf_entity,
+                device=self.inference_device,
+                verbose=False,
+            )
+            if not isinstance(yolo_results, (list, tuple)):
+                yolo_results = [yolo_results]
+
+            for local_i, frame_i in enumerate(active_idx):
+                result = yolo_results[local_i]
+                parsed = self._parse_ultralytics_boxes(result)
+                results[frame_i] = [
+                    det for det in parsed if det.class_name.lower() == "person"
+                ]
+        except Exception as e:
+            print(f"[YoloRunner] Entity batch inference error: {e}")
+
+        return results
+
+    def _parse_yolov5_result(self, results: Any) -> List[RawDetection]:
         detections: List[RawDetection] = []
-        if frame is None:
+        if not hasattr(results, "xyxy") or len(results.xyxy) == 0:
             return detections
 
-        if face_enabled and settings.enable_entity_detection and self.model_entity:
-            try:
-                results = self.model_entity(
-                    frame,
-                    conf=settings.conf_entity,
-                    device=self.inference_device,
-                    verbose=False,
+        names = self.model_fire.names
+        for det in results.xyxy[0]:
+            xmin, ymin, xmax, ymax, conf, cls_id = det.tolist()
+            class_name = names[int(cls_id)] if int(cls_id) < len(names) else "fire/smoke"
+            detections.append(
+                RawDetection(
+                    bbox=(xmin, ymin, xmax, ymax),
+                    class_name=class_name,
+                    confidence=conf,
                 )
-                if results and len(results) > 0:
-                    boxes = results[0].boxes
-                    names = self.model_entity.names
-                    for box in boxes:
-                        xyxy = box.xyxy[0].tolist()
-                        conf = float(box.conf[0])
-                        cls_id = int(box.cls[0])
-                        class_name = names.get(cls_id, "entity")
-                        detections.append(RawDetection(
-                            bbox=(xyxy[0], xyxy[1], xyxy[2], xyxy[3]),
-                            class_name=class_name,
-                            confidence=conf
-                        ))
-            except Exception as e:
-                print(f"[YoloRunner] Entity model inference error: {e}")
-
-        if fire_enabled and self.model_fire:
-            try:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                with torch.inference_mode():
-                    results = self.model_fire(frame_rgb)
-
-                if hasattr(results, "xyxy") and len(results.xyxy) > 0:
-                    xyxy_tensor = results.xyxy[0]
-                    names = self.model_fire.names
-                    for det in xyxy_tensor:
-                        xmin, ymin, xmax, ymax, conf, cls_id = det.tolist()
-                        class_name = names[int(cls_id)] if int(cls_id) < len(names) else "fire/smoke"
-                        detections.append(RawDetection(
-                            bbox=(xmin, ymin, xmax, ymax),
-                            class_name=class_name,
-                            confidence=conf
-                        ))
-            except Exception as e:
-                print(f"[YoloRunner] Fire/Smoke model inference error: {e}")
-
-        if weapon_enabled and self.model_weapon:
-            try:
-                results = self.model_weapon(
-                    frame,
-                    conf=settings.conf_weapon,
-                    device=self.inference_device,
-                    verbose=False,
-                )
-                if results and len(results) > 0:
-                    boxes = results[0].boxes
-                    names = self.model_weapon.names
-                    for box in boxes:
-                        xyxy = box.xyxy[0].tolist()
-                        conf = float(box.conf[0])
-                        cls_id = int(box.cls[0])
-                        class_name = names.get(cls_id, "weapon")
-                        detections.append(RawDetection(
-                            bbox=(xyxy[0], xyxy[1], xyxy[2], xyxy[3]),
-                            class_name=class_name,
-                            confidence=conf
-                        ))
-            except Exception as e:
-                print(f"[YoloRunner] Weapons model inference error: {e}")
-
+            )
         return detections
+
+    def _parse_ultralytics_boxes(self, result: Any) -> List[RawDetection]:
+        detections: List[RawDetection] = []
+        if result is None or not hasattr(result, "boxes") or result.boxes is None:
+            return detections
+
+        names = result.names
+        for box in result.boxes:
+            xyxy = box.xyxy[0].tolist()
+            conf = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            class_name = names.get(cls_id, "object")
+            detections.append(
+                RawDetection(
+                    bbox=(xyxy[0], xyxy[1], xyxy[2], xyxy[3]),
+                    class_name=class_name,
+                    confidence=conf,
+                )
+            )
+        return detections
+
+    @staticmethod
+    def merge_detection_lists(*parts: List[RawDetection]) -> List[RawDetection]:
+        merged: List[RawDetection] = []
+        for part in parts:
+            merged.extend(part)
+        return merged
 
 # Global runner instance
 yolo_runner = YoloRunner()

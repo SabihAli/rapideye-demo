@@ -10,7 +10,7 @@ if [[ ! -f .env ]]; then
 fi
 
 if [[ ! -d .venv ]]; then
-  echo "Missing .venv — run: python -m venv .venv && source .venv/bin/activate && pip install -e ."
+  echo "Missing .venv — run: make install"
   exit 1
 fi
 
