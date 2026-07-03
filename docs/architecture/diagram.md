@@ -18,9 +18,9 @@ flowchart TB
     %% ---------------------------------------
     %% INPUT LAYER
     %% ---------------------------------------
-    subgraph Inputs ["Stream Ingestion (4 Independent Feeds)"]
-        YT["YouTube URL / RTSP / HLS"]:::inputStyle
-        FF["FFmpeg Demuxer (Independent Threads)"]:::inputStyle
+    subgraph Inputs ["Stream Ingestion (4 Hardcoded Video Feeds)"]
+        YT["Local Assets Folder (assets/camera_*.mp4)"]:::inputStyle
+        FF["CV2 File Decoders (Independent Threads)"]:::inputStyle
         YT --> FF
     end
 
@@ -82,7 +82,7 @@ flowchart TB
     %% ---------------------------------------
     subgraph Transport ["API & WebSocket Interfaces"]
         WS_Stream["WebSocket: /ws/streams/{camera_id}\n(Annotated JPEG + Bbox Metadata)"]:::backendStyle
-        REST_API["REST API:\n- GET /api/alerts\n- GET/PUT /api/zones/{camera_id}\n- GET /api/recordings/{alert_id}"]:::backendStyle
+        REST_API["REST API:\n- POST /api/demo/start\n- GET /api/alerts\n- GET/PUT /api/zones/{camera_id}\n- GET /api/recordings/{alert_id}"]:::backendStyle
     end
 
     Annotator -->|"Annotated Frames"| WS_Stream
@@ -106,7 +106,7 @@ flowchart TB
 
 ## Step-by-Step Flow Explanation
 
-1. **Ingest Phase:** `FFmpeg` demuxes each input stream (YouTube, RTSP, or HLS) on its own separate thread. Raw frames are stored in a **10-second rolling RAM ring buffer** to capture pre-alert footage.
+1. **Ingest Phase:** Independent thread decoders read from hardcoded local videos in the `assets/` directory. Raw frames are stored in a **10-second rolling RAM ring buffer** to capture pre-alert footage. The demo can be reset at any time using a `POST /api/demo/start` request.
 2. **Scheduling Phase:** The **Adaptive FPS Scheduler** looks at GPU load and recent detections to adjust the FPS budget dynamically across all 4 cameras.
 3. **Inference Pipeline:** Frames are passed to the GPU (RTX 3090) to run through three YOLO models:
    * **Entity Model:** Detects humans, cars, animals, etc.

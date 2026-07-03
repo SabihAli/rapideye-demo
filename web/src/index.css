@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-main: #0b0b0b;
+  --color-bg-card: #1a1a1a;
+  --color-bg-secondary: #242424;
+  --color-bg-elevated: #2a2a2a;
+  --color-border: #333333;
+  --color-border-subtle: #2a2a2a;
+  --color-text: #ffffff;
+  --color-text-secondary: #e0e0e0;
+  --color-muted: #a0a0a0;
+  --color-inverse: #000000;
+  --color-primary: #ffffff;
+  --color-accent: #d1d1d1;
+  --color-success: #9ca89c;
+  --color-warning: #b8a88a;
+  --color-danger: #c47a7a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg-main);
+  color: var(--color-text-secondary);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4 {
+  color: var(--color-text);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-main);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-live {
+  animation: pulse-live 2s ease-in-out infinite;
+}
+
+.cctv-scanline::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    transparent 50%,
+    rgba(255, 255, 255, 0.02) 50%
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+}
