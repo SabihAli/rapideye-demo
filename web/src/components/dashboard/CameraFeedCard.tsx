@@ -9,18 +9,19 @@ import { ZoneOverlay } from '@/components/zones/ZoneOverlay'
 import { useZones } from '@/context/ZoneContext'
 import { useDemo } from '@/context/DemoContext'
 import { getZoneStates } from '@/lib/zoneUtils'
+import { cn } from '@/lib/utils'
 import type { CameraDefinition } from '@/lib/cameras'
 
 interface CameraFeedCardProps {
   camera: CameraDefinition
 }
 
-type DetectionToggle = 'fire' | 'face' | 'weapon'
+type DetectionMode = 'fire' | 'face' | 'weapon'
 
-const DETECTION_BUTTONS: { id: DetectionToggle; label: string }[] = [
-  { id: 'fire', label: 'fire' },
-  { id: 'face', label: 'face reco' },
-  { id: 'weapon', label: 'weapon' },
+const DETECTION_OPTIONS: { id: DetectionMode; label: string }[] = [
+  { id: 'fire', label: 'Fire' },
+  { id: 'face', label: 'Face Recognition' },
+  { id: 'weapon', label: 'Weapon' },
 ]
 
 function formatRecordingTime(totalSeconds: number): string {
@@ -48,11 +49,7 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const { getStream, isStreamConnected, health } = useDemo()
   const [isRecording, setIsRecording] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
-  const [activeDetections, setActiveDetections] = useState<Record<DetectionToggle, boolean>>({
-    fire: false,
-    face: false,
-    weapon: false,
-  })
+  const [selectedDetection, setSelectedDetection] = useState<DetectionMode | null>(null)
   const stream = getStream(camera.id)
   const zones = getZonesByCamera(camera.id)
   const { occupied, violated } = getZoneStates(zones, [])
@@ -77,10 +74,6 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
     }
     setRecordingSeconds(0)
     setIsRecording(true)
-  }
-
-  const toggleDetection = (id: DetectionToggle) => {
-    setActiveDetections((prev) => ({ ...prev, [id]: !prev[id] }))
   }
 
   return (
@@ -157,22 +150,35 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
             </Link>
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {DETECTION_BUTTONS.map(({ id, label }) => {
-            const active = activeDetections[id]
-            return (
-              <Button
-                key={id}
-                variant={active ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => toggleDetection(id)}
-                aria-pressed={active}
-              >
-                {label}
-              </Button>
-            )
-          })}
-        </div>
+        <fieldset className="mt-2.5 border-0 border-t border-white/5 p-0 pt-2.5">
+          <legend className="sr-only">Detection mode for {camera.name}</legend>
+          <div className="grid grid-cols-3 gap-2">
+            {DETECTION_OPTIONS.map(({ id, label }) => {
+              const selected = selectedDetection === id
+              return (
+                <label
+                  key={id}
+                  className={cn(
+                    'flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border px-1.5 py-2 text-center transition-colors',
+                    selected
+                      ? 'border-white/25 bg-bg-secondary text-text'
+                      : 'border-white/10 text-muted hover:border-white/20 hover:text-text-secondary'
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name={`detection-${camera.id}`}
+                    value={id}
+                    checked={selected}
+                    onChange={() => setSelectedDetection(id)}
+                    className="h-3.5 w-3.5 shrink-0 accent-white"
+                  />
+                  <span className="text-[10px] leading-tight">{label}</span>
+                </label>
+              )
+            })}
+          </div>
+        </fieldset>
       </div>
     </Card>
   )
