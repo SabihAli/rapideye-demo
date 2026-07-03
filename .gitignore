@@ -2,6 +2,7 @@
 .env
 .venv/
 venv/
+facialvenv/
 
 # Python
 __pycache__/
@@ -16,6 +17,7 @@ web/node_modules/
 web/dist/
 
 # Runtime data
+data/*
 data/models/*
 !data/models/.gitkeep
 data/zones/*
@@ -35,6 +37,9 @@ data/facial_rec/samples/*
 .idea/
 .vscode/
 *.swp
+
+# TensorRT engine cache (built locally from .pt weights)
+*.engine
 
 # OS
 .DS_Store

@@ -1,6 +1,8 @@
 # Pipeline Optimizations — 4-Camera Real-Time CV Stack
 YOLO Detection + ByteTrack + ReID + InsightFace Face Recognition
 
+Implemented in `server/inference/face_recognition.py` (sections 1–3, 5 partial, 6 partial, 8 partial). ReID (section 4) is not implemented — face recognition on person crops replaces it for identity.
+
 ---
 
 ## 1. Ingestion & Decode
