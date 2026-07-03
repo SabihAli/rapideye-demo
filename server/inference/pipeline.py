@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Optional
 from server.config import settings
 from server.ingest.stream_manager import stream_manager
 from server.inference.yolo_runner import yolo_runner, RawDetection
+from server.inference.model_switches import model_switch_manager
 from server.inference.zone_engine import zone_engine
 from server.inference.scheduler import fps_scheduler
 from server.inference.annotator import Annotator
@@ -115,9 +116,15 @@ class InferencePipeline:
                 if camera_recorder.is_recording(cam_id):
                     camera_recorder.write_frame(cam_id, frame)
                 
-                # 1. Run YOLO Models
+                # 1. Run YOLO Models (per-camera toggles skip disabled models)
+                switches = model_switch_manager.get_switches(cam_id)
                 start_time = time.time()
-                detections = yolo_runner.run_inference(frame)
+                detections = yolo_runner.run_inference(
+                    frame,
+                    fire_enabled=switches.fire_enabled,
+                    weapon_enabled=switches.weapon_enabled,
+                    face_enabled=switches.face_enabled,
+                )
                 latency_ms = (time.time() - start_time) * 1000.0
 
                 # 2. Evaluate Zone Intrusions

@@ -34,11 +34,6 @@ class StreamManager:
             decoder.stop()
         self.decoders.clear()
 
-    def reset_all(self):
-        """Resets all stream decoders back to the starting frame."""
-        for cam_id, decoder in self.decoders.items():
-            decoder.reset()
-
     def get_decoder(self, camera_id: int) -> Optional[StreamDecoder]:
         """Retrieves decoder instance by ID."""
         return self.decoders.get(camera_id)

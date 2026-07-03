@@ -129,16 +129,23 @@ class YoloRunner:
         except Exception as e:
             print(f"[YoloRunner] ERROR loading Weapons Model: {e}")
 
-    def run_inference(self, frame: Any) -> List[RawDetection]:
+    def run_inference(
+        self,
+        frame: Any,
+        *,
+        fire_enabled: bool = True,
+        weapon_enabled: bool = True,
+        face_enabled: bool = True,
+    ) -> List[RawDetection]:
         """
-        Runs fire/smoke and weapon models on the provided BGR frame.
-        Entity detection runs only when ENABLE_ENTITY_DETECTION=true.
+        Runs enabled models on the provided BGR frame.
+        Entity detection additionally requires ENABLE_ENTITY_DETECTION=true at startup.
         """
         detections: List[RawDetection] = []
         if frame is None:
             return detections
 
-        if settings.enable_entity_detection and self.model_entity:
+        if face_enabled and settings.enable_entity_detection and self.model_entity:
             try:
                 results = self.model_entity(
                     frame,
@@ -162,7 +169,7 @@ class YoloRunner:
             except Exception as e:
                 print(f"[YoloRunner] Entity model inference error: {e}")
 
-        if self.model_fire:
+        if fire_enabled and self.model_fire:
             try:
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 with torch.inference_mode():
@@ -182,7 +189,7 @@ class YoloRunner:
             except Exception as e:
                 print(f"[YoloRunner] Fire/Smoke model inference error: {e}")
 
-        if self.model_weapon:
+        if weapon_enabled and self.model_weapon:
             try:
                 results = self.model_weapon(
                     frame,

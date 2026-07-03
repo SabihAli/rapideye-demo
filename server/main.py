@@ -14,6 +14,7 @@ from server.api.routes_zones import router as zones_router
 from server.api.routes_alerts import router as alerts_router
 from server.api.routes_recordings import router as recordings_router
 from server.api.routes_camera_recordings import router as camera_recordings_router
+from server.api.routes_model_switches import router as model_switches_router
 from server.api.ws_streams import router as ws_router
 from server.db.database import init_db, close_db
 from server.recording.camera_recorder import camera_recorder
@@ -63,6 +64,7 @@ app.add_middleware(
 app.include_router(zones_router)
 app.include_router(alerts_router)
 app.include_router(recordings_router)
+app.include_router(model_switches_router)
 app.include_router(camera_recordings_router)
 app.include_router(ws_router)
 
@@ -86,20 +88,3 @@ async def get_streams_status():
     """
     return stream_manager.get_streams_status()
 
-@app.post("/api/demo/start", tags=["System"])
-async def start_demo():
-    """
-    Starts or restarts the security demo. Rewinds all hardcoded video assets
-    to frame 0 and clears the alert event logs from memory and disk.
-    """
-    try:
-        # Rewind decoders
-        stream_manager.reset_all()
-        # Stop any active manual recordings
-        camera_recorder.stop_all()
-        # Clear alert history
-        inference_pipeline.clear_alerts()
-        return {"status": "success", "message": "Demo started/reset successfully"}
-    except Exception as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=str(e))

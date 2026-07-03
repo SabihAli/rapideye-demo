@@ -57,10 +57,45 @@ def test_zones_crud_endpoints():
     assert get_again.status_code == 200
     assert get_again.json()["polygon"] == test_polygon
 
-def test_demo_start_endpoint():
-    """Verifies that the /api/demo/start POST endpoint resets the demo correctly."""
+def test_model_switches_endpoints():
+    """Verifies per-camera inference model toggle CRUD."""
+    camera_id = 1
+
+    get_response = client.get(f"/api/cameras/{camera_id}/model-switches")
+    assert get_response.status_code == 200
+    get_data = get_response.json()
+    assert get_data["camera_id"] == camera_id
+    assert "fire_enabled" in get_data
+    assert "weapon_enabled" in get_data
+    assert "face_enabled" in get_data
+
+    put_payload = {
+        "camera_id": camera_id,
+        "fire_enabled": False,
+        "weapon_enabled": True,
+        "face_enabled": False,
+    }
+    put_response = client.put(
+        f"/api/cameras/{camera_id}/model-switches",
+        json=put_payload,
+    )
+    assert put_response.status_code == 200
+    put_data = put_response.json()
+    assert put_data["fire_enabled"] is False
+    assert put_data["weapon_enabled"] is True
+
+    get_again = client.get(f"/api/cameras/{camera_id}/model-switches")
+    assert get_again.status_code == 200
+    assert get_again.json()["fire_enabled"] is False
+
+    all_response = client.get("/api/cameras/model-switches")
+    assert all_response.status_code == 200
+    all_data = all_response.json()
+    assert len(all_data) == 4
+    cam1 = next(item for item in all_data if item["camera_id"] == 1)
+    assert cam1["fire_enabled"] is False
+
+def test_demo_start_endpoint_removed():
+    """The legacy demo start/reset endpoint should no longer exist."""
     response = client.post("/api/demo/start")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    assert "started/reset" in data["message"]
+    assert response.status_code == 404

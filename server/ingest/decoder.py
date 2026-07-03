@@ -28,7 +28,6 @@ class StreamDecoder:
         self._last_push_time = 0.0
         self._frame_count = 0
         self._fps_start_time = time.time()
-        self._reset_triggered = False
         
         # Lock for accessing latest frame
         self._frame_lock = threading.Lock()
@@ -47,13 +46,6 @@ class StreamDecoder:
         if self._thread:
             self._thread.join(timeout=2.0)
         self.is_active = False
-
-    def reset(self):
-        """Signals the decoder to reset video position to frame 0 and clears stats/buffers."""
-        print(f"[Decoder Cam {self.camera_id}] Reset triggered.")
-        self._reset_triggered = True
-        self.ring_buffer.clear()
-        self.error_count = 0
 
     def get_latest_frame(self) -> Optional[Any]:
         """Thread-safe retrieval of the latest frame."""
@@ -76,15 +68,6 @@ class StreamDecoder:
         reconnect_delay = 5.0
         
         while self._running:
-            # Handle reset trigger in thread context
-            if self._reset_triggered:
-                if cap is not None and cap.isOpened():
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                self._reset_triggered = False
-                self._last_push_time = time.time()
-                self._frame_count = 0
-                self._fps_start_time = time.time()
-
             if cap is None or not cap.isOpened():
                 self.is_active = False
                 print(f"[Decoder Cam {self.camera_id}] Opening file/stream: {resolved_url}")
