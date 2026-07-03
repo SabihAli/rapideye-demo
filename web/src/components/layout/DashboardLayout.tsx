@@ -1,9 +1,10 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Map } from 'lucide-react'
+import { Home, LayoutDashboard, Map } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navLinks = [
-  { label: 'Dashboard', path: '/', icon: LayoutDashboard },
+  { label: 'Home', path: '/', icon: Home },
+  { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   { label: 'Zone Management', path: '/zones', icon: Map },
 ]
 

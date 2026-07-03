@@ -11,11 +11,9 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-text">Security Monitor</h1>
-          <p className="text-sm text-muted">Live annotated feeds from 4 camera streams</p>
-        </div>
+      <div>
+        <h1 className="text-xl font-bold text-text">Security Monitor</h1>
+        <p className="text-sm text-muted">Live annotated feeds from 4 camera streams</p>
       </div>
 
       {healthError && (
@@ -25,19 +23,18 @@ export function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
-        <div className="space-y-4 xl:col-span-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-text">Live Camera Feeds</h2>
-            <span className="text-xs text-muted">
-              {onlineCount}/{CAMERAS.length} streams active
-            </span>
-          </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {CAMERAS.map((camera) => (
-              <CameraFeedCard key={camera.id} camera={camera} />
-            ))}
-          </div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-text">Live Camera Feeds</h2>
+        <span className="text-xs text-muted">
+          {onlineCount}/{CAMERAS.length} streams active
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:col-span-3">
+          {CAMERAS.map((camera) => (
+            <CameraFeedCard key={camera.id} camera={camera} />
+          ))}
         </div>
 
         <div className="xl:sticky xl:top-6 xl:h-[calc(100vh-3rem)]">

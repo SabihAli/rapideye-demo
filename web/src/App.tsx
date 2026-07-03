@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
+import { LandingPage } from '@/pages/LandingPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { ZoneManagementPage } from '@/pages/ZoneManagementPage'
 import { RecordingsPage } from '@/pages/RecordingsPage'
@@ -9,8 +10,9 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route path="/" element={<LandingPage />} />
         <Route element={<DashboardLayout />}>
-          <Route index element={<DashboardPage />} />
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="live-cameras" element={<PlaceholderPage title="Live Cameras" description="Full-screen multi-camera live view with AI overlays." />} />
           <Route path="cameras" element={<RecordingsPage />} />
           <Route path="zones" element={<ZoneManagementPage />} />

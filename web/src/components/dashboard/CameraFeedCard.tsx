@@ -1,4 +1,9 @@
+<<<<<<< HEAD
 import { Maximize2, Cpu, Circle, Square, Disc } from 'lucide-react'
+=======
+import { useEffect, useState } from 'react'
+import { Maximize2, Cpu, Circle, Square } from 'lucide-react'
+>>>>>>> feature/ui-layout-updates
 import { Link } from 'react-router-dom'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -9,10 +14,28 @@ import { useZones } from '@/context/ZoneContext'
 import { useDemo } from '@/context/DemoContext'
 import { useCameraRecording } from '@/hooks/useCameraRecording'
 import { getZoneStates } from '@/lib/zoneUtils'
+import { cn } from '@/lib/utils'
 import type { CameraDefinition } from '@/lib/cameras'
 
 interface CameraFeedCardProps {
   camera: CameraDefinition
+}
+
+type DetectionMode = 'fire' | 'face' | 'weapon'
+
+const DETECTION_OPTIONS: { id: DetectionMode; label: string }[] = [
+  { id: 'fire', label: 'Fire' },
+  { id: 'face', label: 'Face Recognition' },
+  { id: 'weapon', label: 'Weapon' },
+]
+
+function formatRecordingTime(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const mm = minutes.toString().padStart(2, '0')
+  const ss = seconds.toString().padStart(2, '0')
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
 function statusVariant(status: 'Online' | 'Offline' | 'Warning') {
@@ -29,7 +52,17 @@ function statusVariant(status: 'Online' | 'Offline' | 'Warning') {
 export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const { getZonesByCamera } = useZones()
   const { getStream, isStreamConnected, health } = useDemo()
+<<<<<<< HEAD
   const { isRecording, loading: recordingLoading, start, stop } = useCameraRecording(camera.numId)
+=======
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [selectedDetections, setSelectedDetections] = useState<Record<DetectionMode, boolean>>({
+    fire: false,
+    face: false,
+    weapon: false,
+  })
+>>>>>>> feature/ui-layout-updates
   const stream = getStream(camera.id)
   const zones = getZonesByCamera(camera.id)
   const { occupied, violated } = getZoneStates(zones, [])
@@ -38,6 +71,27 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
   const fps = stream?.target_fps ?? 0
   const latency = stream?.latency_ms ?? 0
   const isAlert = stream?.is_alert ?? false
+
+  useEffect(() => {
+    if (!isRecording) return
+    const timer = window.setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isRecording])
+
+  const handleRecordingToggle = () => {
+    if (isRecording) {
+      setIsRecording(false)
+      return
+    }
+    setRecordingSeconds(0)
+    setIsRecording(true)
+  }
+
+  const toggleDetection = (id: DetectionMode) => {
+    setSelectedDetections((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
 
   return (
     <Card
@@ -52,9 +106,15 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
             LIVE
           </Badge>
           {isRecording && (
+<<<<<<< HEAD
             <Badge variant="danger" className="gap-1 bg-black/70">
               <Disc className="h-2 w-2 fill-danger" />
               REC
+=======
+            <Badge variant="danger" className="animate-pulse-live gap-1 bg-black/70 font-mono tabular-nums">
+              <Circle className="h-2 w-2 fill-danger" />
+              {formatRecordingTime(recordingSeconds)}
+>>>>>>> feature/ui-layout-updates
             </Badge>
           )}
           {stream && (
@@ -82,6 +142,7 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
         </div>
       </CameraPreview>
 
+<<<<<<< HEAD
       <div className="flex items-center justify-between gap-2 border-t border-white/5 p-3">
         <p className="truncate text-sm font-medium text-text">{camera.name}</p>
         <div className="flex items-center gap-2">
@@ -110,6 +171,67 @@ export function CameraFeedCard({ camera }: CameraFeedCardProps) {
             </Button>
           </Link>
         </div>
+=======
+      <div className="border-t border-white/5 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-medium text-text">{camera.name}</p>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant={isRecording ? 'danger' : 'outline'}
+              size="sm"
+              onClick={handleRecordingToggle}
+              aria-pressed={isRecording}
+              aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            >
+              {isRecording ? (
+                <>
+                  <Square className="h-3 w-3 fill-current" />
+                  Stop
+                </>
+              ) : (
+                <>
+                  <Circle className="h-3 w-3 fill-danger text-danger" />
+                  Record
+                </>
+              )}
+            </Button>
+            <Link to={`/zones?camera=${camera.id}`}>
+              <Button variant="outline" size="sm">
+                <Maximize2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Zones</span>
+              </Button>
+            </Link>
+          </div>
+        </div>
+        <fieldset className="mt-2.5 border-0 border-t border-white/5 p-0 pt-2.5">
+          <legend className="sr-only">Detection modes for {camera.name}</legend>
+          <div className="grid grid-cols-3 gap-2">
+            {DETECTION_OPTIONS.map(({ id, label }) => {
+              const selected = selectedDetections[id]
+              return (
+                <label
+                  key={id}
+                  className={cn(
+                    'flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border px-1.5 py-2 text-center transition-colors',
+                    selected
+                      ? 'border-white/25 bg-bg-secondary text-text'
+                      : 'border-white/10 text-muted hover:border-white/20 hover:text-text-secondary'
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    name={`detection-${camera.id}-${id}`}
+                    checked={selected}
+                    onChange={() => toggleDetection(id)}
+                    className="h-3.5 w-3.5 shrink-0 rounded accent-white"
+                  />
+                  <span className="text-[10px] leading-tight">{label}</span>
+                </label>
+              )
+            })}
+          </div>
+        </fieldset>
+>>>>>>> feature/ui-layout-updates
       </div>
     </Card>
   )

@@ -23,7 +23,7 @@ export function AlertFeed({ alerts }: AlertFeedProps) {
       <CardContent className="flex-1 space-y-2 overflow-y-auto p-3">
         {alerts.length === 0 ? (
           <div className="rounded-xl border border-dashed border-white/10 py-8 text-center text-sm text-muted">
-            No alerts yet — detections will appear here
+            No alerts yet. Detections will appear here
           </div>
         ) : (
           alerts.map((alert) => {
