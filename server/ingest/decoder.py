@@ -1,34 +1,42 @@
 import time
 import cv2
 import threading
-import subprocess
-import shutil
 from typing import Optional, Any
 from pathlib import Path
 from server.ingest.ring_buffer import RingBuffer
+from server.ingest.nvdec_reader import NvdecFrameReader, NvdecUnavailable
 
 class StreamDecoder:
     """
-    Decodes a hardcoded local video file or RTSP stream on an independent background thread.
-    Maintains a 10s pre-alert RingBuffer and throttles decoding/pushing according to target_fps.
+    Decodes a local video file or RTSP stream on an independent background thread.
+
+    Decode path: NVDEC (GPU, ffmpeg cuvid) when NVDEC_ENABLE is set, with
+    automatic fallback to CPU OpenCV capture. Streams run at their native
+    frame rate — files are paced in real time (no slowdown/speedup) and loop
+    forever. There is no FPS throttling; the pipeline consumes the latest
+    frame only, so a slow consumer never delays or distorts playback.
+
+    Maintains a 10 s pre-alert RingBuffer and a thread-safe latest-frame slot.
     """
-    def __init__(self, camera_id: int, url: str, base_fps: int = 15):
+    def __init__(self, camera_id: int, url: str, base_fps: int = 30):
         self.camera_id = camera_id
         self.url = url
+        # Native stream rate once known; base_fps until probed.
         self.target_fps = float(base_fps)
         self.ring_buffer = RingBuffer(max_len=int(self.target_fps * 10))
-        
+        self.decode_backend = "none"
+
         self.is_active = False
         self.error_count = 0
         self.fps_measure = 0.0
-        
+
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._latest_frame: Optional[Any] = None
         self._last_push_time = 0.0
         self._frame_count = 0
         self._fps_start_time = time.time()
-        
+
         # Lock for accessing latest frame
         self._frame_lock = threading.Lock()
 
@@ -44,7 +52,7 @@ class StreamDecoder:
         """Stops the background decoder thread."""
         self._running = False
         if self._thread:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=4.0)
         self.is_active = False
 
     def get_latest_frame(self) -> Optional[Any]:
@@ -52,82 +60,118 @@ class StreamDecoder:
         with self._frame_lock:
             return self._latest_frame
 
+    def _push_frame(self, frame) -> None:
+        now = time.time()
+        self._frame_count += 1
+        elapsed = now - self._fps_start_time
+        if elapsed >= 2.0:
+            self.fps_measure = self._frame_count / elapsed
+            self._frame_count = 0
+            self._fps_start_time = now
+        with self._frame_lock:
+            self._latest_frame = frame
+        self.ring_buffer.append(now, frame)
+        self._last_push_time = now
+
     def _run_loop(self):
         print(f"[Decoder Cam {self.camera_id}] Thread started for {self.url}")
-        
+
         # Resolve path relative to project root if not absolute
+        from server.config import settings
         resolved_url = self.url
         path_obj = Path(resolved_url)
-        if not path_obj.is_absolute():
-            from server.config import settings
+        if not path_obj.is_absolute() and not resolved_url.lower().startswith(
+            ("rtsp://", "http://", "https://")
+        ):
             resolved_url = str(settings.project_root / resolved_url)
 
-        is_file = Path(resolved_url).exists() or resolved_url.endswith((".mp4", ".avi", ".mkv"))
-        
-        cap = None
-        reconnect_delay = 5.0
-        
+        is_file = Path(resolved_url).exists()
+
         while self._running:
-            if cap is None or not cap.isOpened():
-                self.is_active = False
-                print(f"[Decoder Cam {self.camera_id}] Opening file/stream: {resolved_url}")
-                cap = cv2.VideoCapture(resolved_url)
-                if not cap.isOpened():
-                    self.error_count += 1
-                    print(f"[Decoder Cam {self.camera_id}] Open failed. Retrying in {reconnect_delay}s...")
-                    time.sleep(reconnect_delay)
-                    continue
-                self.is_active = True
-                self._last_push_time = time.time()
-                self._fps_start_time = time.time()
-                self._frame_count = 0
+            if settings.nvdec_enable and self._run_nvdec(resolved_url, is_file):
+                continue  # NVDEC loop exited (stop or stream error) — retry/exit
+            if not self._running:
+                break
+            self._run_opencv(resolved_url, is_file)
 
-            ret, frame = cap.read()
-            if not ret:
-                self.error_count += 1
-                if is_file:
-                    # Loop video back to start
-                    print(f"[Decoder Cam {self.camera_id}] End of video file. Looping back to start.")
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    time.sleep(0.1)
-                    continue
-                else:
-                    print(f"[Decoder Cam {self.camera_id}] Read error. Reconnecting stream...")
-                    cap.release()
-                    cap = None
-                    time.sleep(1.0)
-                    continue
-
-            now = time.time()
-            self._frame_count += 1
-            elapsed = now - self._fps_start_time
-            if elapsed >= 2.0:
-                self.fps_measure = self._frame_count / elapsed
-                self._frame_count = 0
-                self._fps_start_time = now
-
-            target_interval = 1.0 / max(self.target_fps, 1.0)
-            time_since_push = now - self._last_push_time
-            
-            if is_file:
-                sleep_needed = target_interval - time_since_push
-                if sleep_needed > 0:
-                    time.sleep(sleep_needed)
-                    now = time.time()
-                
-                with self._frame_lock:
-                    self._latest_frame = frame.copy()
-                self.ring_buffer.append(now, self._latest_frame)
-                self._last_push_time = now
-            else:
-                if time_since_push >= target_interval:
-                    with self._frame_lock:
-                        self._latest_frame = frame.copy()
-                    self.ring_buffer.append(now, self._latest_frame)
-                    self._last_push_time = now
-                time.sleep(0.001)
-
-        if cap is not None:
-            cap.release()
         self.is_active = False
         print(f"[Decoder Cam {self.camera_id}] Stopped.")
+
+    def _apply_native_fps(self, fps: float) -> None:
+        if fps and fps > 0:
+            self.target_fps = float(fps)
+            self.ring_buffer = RingBuffer(max_len=int(self.target_fps * 10))
+
+    def _run_nvdec(self, url: str, is_file: bool) -> bool:
+        """Decode via ffmpeg NVDEC until stop/stream end. Returns False if
+        NVDEC is unavailable (caller falls back to OpenCV)."""
+        try:
+            reader = NvdecFrameReader(url, is_file=is_file)
+        except NvdecUnavailable as e:
+            print(f"[Decoder Cam {self.camera_id}] NVDEC unavailable ({e}); using CPU decode.")
+            return False
+        except Exception as e:
+            print(f"[Decoder Cam {self.camera_id}] NVDEC init error ({e}); using CPU decode.")
+            return False
+
+        self._apply_native_fps(reader.fps)
+        self.decode_backend = "nvdec"
+        self.is_active = True
+        print(
+            f"[Decoder Cam {self.camera_id}] NVDEC decode {reader.width}x{reader.height} "
+            f"@ {reader.fps:.1f}fps (native pacing)"
+        )
+        try:
+            while self._running:
+                frame = reader.read()
+                if frame is None:
+                    self.error_count += 1
+                    print(f"[Decoder Cam {self.camera_id}] NVDEC stream ended/broke. Reopening...")
+                    break
+                self._push_frame(frame)
+        finally:
+            reader.close()
+            self.is_active = False
+        if self._running:
+            time.sleep(1.0)
+        return True
+
+    def _run_opencv(self, url: str, is_file: bool) -> None:
+        """CPU OpenCV fallback. Files are paced at native FPS; loops forever."""
+        cap = cv2.VideoCapture(url)
+        if not cap.isOpened():
+            self.error_count += 1
+            print(f"[Decoder Cam {self.camera_id}] Open failed. Retrying in 5s...")
+            time.sleep(5.0)
+            return
+
+        native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        self._apply_native_fps(native_fps)
+        self.decode_backend = "opencv"
+        self.is_active = True
+        frame_interval = 1.0 / max(native_fps, 1.0)
+        next_due = time.time()
+        print(f"[Decoder Cam {self.camera_id}] CPU decode @ {native_fps:.1f}fps (native pacing)")
+
+        try:
+            while self._running:
+                ok, frame = cap.read()
+                if not ok:
+                    if is_file:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
+                    self.error_count += 1
+                    print(f"[Decoder Cam {self.camera_id}] Read error. Reconnecting stream...")
+                    break
+                if is_file:
+                    # Real-time pacing so file playback matches wall clock.
+                    now = time.time()
+                    if now < next_due:
+                        time.sleep(next_due - now)
+                    next_due = max(next_due + frame_interval, time.time() - frame_interval)
+                self._push_frame(frame)
+        finally:
+            cap.release()
+            self.is_active = False
+        if self._running:
+            time.sleep(1.0)

@@ -1,95 +1,67 @@
-"""
-Live facial recognition integration for the demo-app inference pipeline.
-
-Runs YOLO11n person detection + ByteTrack + InsightFace gallery matching on
-cameras where ``face_enabled`` is true. Identity labels bind to person tracks.
-
-Optimizations (see docs/PIPELINE_OPTIMIZATIONS.md):
-- Batched YOLO person detection across face-enabled cameras
-- Parallel per-camera ByteTrack (CPU-bound, independent streams)
-- Throttled + batched face recognition with gallery match_batch
-- Adaptive recognition interval when pipeline latency grows
-"""
-
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from server.config import settings
-from server.inference.yolo_runner import RawDetection
+from server.inference.bytetrack_adapter import ByteTrackAdapter, TrackState, clip_bbox
+from server.inference.yolo_runner import RawDetection, yolo_runner
+
+
+def _new_tracker() -> ByteTrackAdapter:
+    return ByteTrackAdapter(
+        track_buffer=settings.track_buffer,
+        track_high_thresh=settings.track_high_thresh,
+        track_low_thresh=settings.track_low_thresh,
+        new_track_thresh=settings.track_new_thresh,
+        match_thresh=settings.track_match_thresh,
+    )
 
 
 @dataclass
-class _TrackWork:
-    camera_id: int
-    frame: np.ndarray
-    boxes: object
-    rec_interval: int
-
-
-@dataclass
-class _RecCandidate:
-    camera_id: int
-    det_index: int
-    frame: np.ndarray
-    bbox: tuple[int, int, int, int]
-    state: dict
+class CameraState:
+    tracker: ByteTrackAdapter = field(default_factory=_new_tracker)
+    frame_index: int = 0
+    next_detect_frame: int = 0
 
 
 class FacePipelineService:
-    """Per-camera person tracking and identity labeling for live streams."""
+    """Per-camera person tracking, cadence control, and identity labeling."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._loaded = False
-        self._detector = None
         self._face_app = None
         self._gallery = None
-        self._trackers: Dict[int, object] = {}
-        self._track_states: Dict[int, Dict[int, dict]] = {
-            i: {} for i in range(1, 5)
-        }
+        self._recognize_persons_batch = None
+        self._camera_states: Dict[int, CameraState] = {i: CameraState() for i in range(1, 5)}
         self.loaded_model_names: List[str] = []
         self._rec_interval_effective = settings.facial_rec_interval
-        self._recognize_persons_batch = None
+        self._person_interval_ceiling_effective = settings.person_interval_max
+        self._fire_interval_effective = settings.fire_det_interval
 
     def ensure_loaded(self) -> bool:
-        """Lazy-load GPU models and gallery. Returns False if unavailable."""
         with self._lock:
             if self._loaded:
-                return self._detector is not None
-
+                return self._face_app is not None
             try:
                 from server.inference.face_recognition import (
                     FaceAnalysisApp,
-                    PersonDetector,
+                    FaceGallery,
                     load_gallery_from_json,
                     recognize_persons_batch,
                 )
 
                 self._recognize_persons_batch = recognize_persons_batch
-
                 gpu = settings.cuda_device if settings.use_cuda else -1
-                model_path = settings.models_dir / settings.model_person
-                self._detector = PersonDetector(
-                    model_path=model_path,
-                    gpu=gpu,
-                    conf=settings.person_conf,
-                    imgsz=settings.person_imgsz,
-                    half=settings.use_cuda,
-                    use_trt=settings.person_use_trt,
-                )
                 self._face_app = FaceAnalysisApp(
                     model_pack=settings.insightface_model,
                     det_size=(settings.insightface_det_size, settings.insightface_det_size),
-                    ctx_id=gpu if settings.use_cuda else -1,
+                    ctx_id=gpu,
                 )
-
                 gallery_path = settings.facial_gallery_path
                 if gallery_path.is_file():
                     self._gallery = load_gallery_from_json(
@@ -97,193 +69,171 @@ class FacePipelineService:
                         threshold=settings.facial_match_threshold,
                     )
                 else:
-                    from server.inference.face_recognition import FaceGallery
-
-                    print(
-                        f"[FacePipeline] Gallery not found at {gallery_path}; "
-                        "labels will show Unknown until gallery is built."
-                    )
                     self._gallery = FaceGallery(threshold=settings.facial_match_threshold)
-
-                self.loaded_model_names = [
-                    "Person (YOLO11n)",
-                    f"InsightFace ({settings.insightface_model})",
-                ]
-                if self._detector.is_engine:
-                    self.loaded_model_names[0] += " TensorRT"
-
+                self.loaded_model_names = [f"InsightFace ({settings.insightface_model})"]
                 self._loaded = True
-                print(
-                    f"[FacePipeline] Ready — gallery identities: "
-                    f"{len(self._gallery.entries)}, rec_every={self._rec_interval_effective}"
-                )
                 return True
             except Exception as exc:
                 print(f"[FacePipeline] Failed to load models: {exc}")
                 self._loaded = True
-                self._detector = None
+                self._face_app = None
                 return False
 
+    def reset_camera(self, camera_id: int) -> None:
+        with self._lock:
+            self._camera_states[camera_id] = CameraState()
+
     def report_pipeline_pressure(self, latency_ms: float, batch_size: int) -> None:
-        """Adapt face-recognition throttle when inference falls behind."""
+        """Shared backpressure signal for the whole tick: as measured latency
+        climbs, both the facial-rec retry cadence AND the person/fire
+        detection cadence ceilings widen (more frames get interpolated/
+        coasted between real detector calls instead of running inference
+        every tick); as latency recovers they narrow back down. Previously
+        only facial-rec responded to load, so person/fire kept requesting
+        detector time every `person_interval_max`/`fire_det_interval` frames
+        regardless of how backed up the pipeline already was.
+        """
         if not settings.adaptive_facial_throttle:
             self._rec_interval_effective = settings.facial_rec_interval
+            self._person_interval_ceiling_effective = settings.person_interval_max
+            self._fire_interval_effective = settings.fire_det_interval
             return
 
-        base = settings.facial_rec_interval
-        ceiling = settings.facial_rec_interval_max
         threshold = settings.pipeline_lag_threshold_ms
+        under_load = latency_ms > threshold or batch_size >= 3
+        relieved = latency_ms < threshold * 0.5
 
-        if latency_ms > threshold or batch_size >= 3:
-            self._rec_interval_effective = min(ceiling, self._rec_interval_effective + 1)
-        elif latency_ms < threshold * 0.5 and self._rec_interval_effective > base:
-            self._rec_interval_effective = max(base, self._rec_interval_effective - 1)
+        if under_load:
+            self._rec_interval_effective = min(settings.facial_rec_interval_max, self._rec_interval_effective + 1)
+            self._person_interval_ceiling_effective = min(
+                settings.person_interval_max_ceiling, self._person_interval_ceiling_effective + 1
+            )
+            self._fire_interval_effective = min(settings.fire_det_interval_max, self._fire_interval_effective + 1)
+        elif relieved:
+            if self._rec_interval_effective > settings.facial_rec_interval:
+                self._rec_interval_effective -= 1
+            if self._person_interval_ceiling_effective > settings.person_interval_max:
+                self._person_interval_ceiling_effective -= 1
+            if self._fire_interval_effective > settings.fire_det_interval:
+                self._fire_interval_effective -= 1
 
     @property
     def rec_interval_effective(self) -> int:
         return max(1, self._rec_interval_effective)
 
-    def reset_camera(self, camera_id: int) -> None:
-        """Drop tracker state when facial recognition is disabled for a camera."""
-        with self._lock:
-            self._trackers.pop(camera_id, None)
-            self._track_states[camera_id] = {}
-
-    def _get_tracker(self, camera_id: int, target_fps: float | None = None):
-        if camera_id not in self._trackers:
-            from server.inference.face_recognition import make_bytetrack
-
-            buffer = settings.track_buffer
-            if target_fps and target_fps > 0:
-                buffer = max(15, int(settings.track_buffer * target_fps / max(settings.base_fps, 1)))
-            self._trackers[camera_id] = make_bytetrack(buffer)
-        return self._trackers[camera_id]
+    @property
+    def fire_interval_effective(self) -> int:
+        return max(1, self._fire_interval_effective)
 
     @staticmethod
-    def _should_recognize(seen: int, rec_interval: int) -> bool:
-        """Run on track init and every N frames thereafter."""
-        return seen == 0 or seen % rec_interval == 0
+    def _should_attempt_recognition(track: TrackState, rec_interval: int, min_box: int) -> bool:
+        x1, y1, x2, y2 = map(int, track.bbox)
+        if track.label != "Unknown":
+            return False
+        if (y2 - y1) < min_box or (x2 - x1) < min_box:
+            return False
+        return track.rec_attempts == 0 or track.rec_attempts % rec_interval == 0
+
+    def _dynamic_interval(self, mean_conf: float) -> int:
+        low = settings.track_conf_low
+        high = settings.track_conf_high
+        ceiling = max(settings.person_interval_min, self._person_interval_ceiling_effective)
+        if mean_conf <= low:
+            return settings.person_interval_min
+        if mean_conf >= high:
+            return ceiling
+        ratio = (mean_conf - low) / max(high - low, 1e-6)
+        span = ceiling - settings.person_interval_min
+        return settings.person_interval_min + int(round(span * ratio))
 
     @staticmethod
-    def _apply_match(state: dict, match: tuple[str, float] | None) -> None:
+    def _apply_match(track: TrackState, match: Tuple[str, float] | None) -> None:
+        track.rec_attempts += 1
         if match is None:
             return
         name, sim = match
         if name != "Unknown":
-            state["votes"][name] = state["votes"].get(name, 0.0) + sim
-            state["sim"] = sim
-        state["label"] = (
-            max(state["votes"], key=state["votes"].get) if state["votes"] else "Unknown"
-        )
-
-    def _track_camera(
-        self,
-        work: _TrackWork,
-        target_fps: float | None = None,
-    ) -> tuple[int, List[RawDetection], List[_RecCandidate]]:
-        with self._lock:
-            tracker = self._get_tracker(work.camera_id, target_fps=target_fps)
-
-        state = self._track_states[work.camera_id]
-        tracks_arr = np.asarray(tracker.update(work.boxes, work.frame))
-        dets: List[RawDetection] = []
-        candidates: List[_RecCandidate] = []
-
-        for row in tracks_arr:
-            x1, y1, x2, y2 = row[:4]
-            track_id = int(row[4])
-            score = float(row[5])
-            bbox = (int(x1), int(y1), int(x2), int(y2))
-
-            st = state.setdefault(
-                track_id,
-                {"votes": {}, "label": "Unknown", "sim": 0.0, "seen": 0},
-            )
-            big_enough = (bbox[3] - bbox[1]) >= settings.min_person_box
-            if big_enough and self._should_recognize(st["seen"], work.rec_interval):
-                candidates.append(
-                    _RecCandidate(
-                        camera_id=work.camera_id,
-                        det_index=len(dets),
-                        frame=work.frame,
-                        bbox=bbox,
-                        state=st,
-                    )
-                )
-
-            st["seen"] += 1
-            dets.append(
-                RawDetection(
-                    bbox=bbox,
-                    class_name="person",
-                    confidence=score,
-                    track_id=track_id,
-                    identity=st["label"],
-                    similarity=st["sim"],
-                )
-            )
-
-        return work.camera_id, dets, candidates
+            track.votes[name] = track.votes.get(name, 0.0) + sim
+            track.similarity = sim
+            track.label = max(track.votes, key=track.votes.get)
 
     def process_batch(
         self,
         items: List[Tuple[int, np.ndarray]],
         *,
-        target_fps_by_camera: Dict[int, float] | None = None,
+        detect_allowed: Optional[Dict[int, bool]] = None,
+        recognition_allowed: Optional[Dict[int, bool]] = None,
     ) -> Dict[int, List[RawDetection]]:
-        """
-        Run batched person detection + tracking + identity labeling.
-
-        ``items`` is a list of ``(camera_id, bgr_frame)`` for face-enabled cameras.
-        """
         if not items:
             return {}
+        if yolo_runner.person_detector is None:
+            return {camera_id: [] for camera_id, _ in items}
 
-        if not self.ensure_loaded() or self._detector is None or self._face_app is None:
-            return {cam_id: [] for cam_id, _ in items}
-
-        camera_ids = [cam_id for cam_id, _ in items]
+        face_ready = self.ensure_loaded()
+        camera_ids = [camera_id for camera_id, _ in items]
         frames = [frame for _, frame in items]
-        rec_interval = self.rec_interval_effective
-        fps_map = target_fps_by_camera or {}
 
-        with self._lock:
-            boxes_batch = self._detector.detect_batch(frames)
+        detect_mask: List[bool] = []
+        for camera_id in camera_ids:
+            state = self._camera_states[camera_id]
+            state.frame_index += 1
+            can_detect = True if detect_allowed is None else detect_allowed.get(camera_id, True)
+            detect_mask.append(can_detect and state.frame_index >= state.next_detect_frame)
 
-        work_items = [
-            _TrackWork(cam_id, frame, boxes, rec_interval)
-            for cam_id, frame, boxes in zip(camera_ids, frames, boxes_batch)
-        ]
+        detections_batch = yolo_runner.run_person_batch(frames, person_mask=detect_mask)
+        out: Dict[int, List[RawDetection]] = {camera_id: [] for camera_id in camera_ids}
+        rec_candidates: List[Tuple[np.ndarray, Tuple[int, int, int, int]]] = []
+        rec_tracks: List[TrackState] = []
 
-        out: Dict[int, List[RawDetection]] = {cam_id: [] for cam_id in camera_ids}
-        all_candidates: List[_RecCandidate] = []
+        for idx, (camera_id, frame) in enumerate(items):
+            state = self._camera_states[camera_id]
+            tracker = state.tracker
 
-        if len(work_items) > 1:
-            with ThreadPoolExecutor(max_workers=min(4, len(work_items))) as pool:
-                futures = [
-                    pool.submit(self._track_camera, work, fps_map.get(work.camera_id))
-                    for work in work_items
-                ]
-                track_results = [f.result() for f in futures]
-        else:
-            work = work_items[0]
-            track_results = [self._track_camera(work, fps_map.get(work.camera_id))]
+            if detect_mask[idx]:
+                active_tracks, _ = tracker.update_with_detections(detections_batch[idx], frame.shape)
+                state.next_detect_frame = state.frame_index + self._dynamic_interval(tracker.mean_confidence())
+            else:
+                active_tracks = tracker.predict_only(frame.shape)
 
-        for cam_id, dets, candidates in track_results:
-            out[cam_id] = dets
-            all_candidates.extend(candidates)
-
-        if all_candidates and self._recognize_persons_batch is not None:
-            batch_items = [(c.frame, c.bbox) for c in all_candidates]
-            with self._lock:
-                matches = self._recognize_persons_batch(
-                    batch_items, self._face_app, self._gallery
+            for track in active_tracks:
+                bbox = clip_bbox(track.bbox, frame.shape)
+                out[camera_id].append(
+                    RawDetection(
+                        bbox=bbox,
+                        class_name="person",
+                        confidence=track.confidence,
+                        track_id=track.track_id,
+                        identity=track.label,
+                        similarity=track.similarity,
+                    )
                 )
-            for candidate, match in zip(all_candidates, matches):
-                self._apply_match(candidate.state, match)
-                det = out[candidate.camera_id][candidate.det_index]
-                det.identity = candidate.state["label"]
-                det.similarity = candidate.state["sim"]
+                if (
+                    detect_mask[idx]
+                    and face_ready
+                    and (True if recognition_allowed is None else recognition_allowed.get(camera_id, False))
+                    and self._should_attempt_recognition(track, self.rec_interval_effective, settings.min_person_box)
+                ):
+                    rec_candidates.append((frame, bbox))
+                    rec_tracks.append(track)
+
+        if rec_candidates and self._recognize_persons_batch is not None:
+            matches = self._recognize_persons_batch(rec_candidates, self._face_app, self._gallery)
+            for track, match in zip(rec_tracks, matches):
+                self._apply_match(track, match)
+
+            for camera_id, detections in out.items():
+                for det in detections:
+                    track = next(
+                        (
+                            track
+                            for track in self._camera_states[camera_id].tracker.active_tracks()
+                            if track.track_id == det.track_id
+                        ),
+                        None,
+                    )
+                    if track is not None:
+                        det.identity = track.label
+                        det.similarity = track.similarity
 
         return out
 

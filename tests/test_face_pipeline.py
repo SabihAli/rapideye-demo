@@ -53,11 +53,16 @@ class TestYoloRunnerMerge:
 class TestFacePipelineService:
     def test_reset_camera_clears_tracker_state(self):
         service = FacePipelineService()
-        service._trackers[1] = object()
-        service._track_states[1] = {3: {"label": "Alice"}}
+        state = service._camera_states[1]
+        state.tracker.update_with_detections(
+            [RawDetection((0, 0, 10, 10), "person", 0.8)],
+            (480, 640, 3),
+        )
+        state.frame_index = 9
+        assert state.tracker.active_tracks() != []
         service.reset_camera(1)
-        assert 1 not in service._trackers
-        assert service._track_states[1] == {}
+        assert service._camera_states[1].frame_index == 0
+        assert service._camera_states[1].tracker.active_tracks() == []
 
     def test_process_batch_returns_empty_when_not_loaded(self):
         service = FacePipelineService()
@@ -71,42 +76,52 @@ class TestFacePipelineService:
     def test_process_batch_emits_person_detections(self, _mock_loaded):
         service = FacePipelineService()
         service._loaded = True
-        service._detector = MagicMock()
         service._face_app = MagicMock()
         service._gallery = MagicMock()
-
-        boxes = MagicMock()
-        service._detector.detect_batch.return_value = [boxes]
-
-        tracker = MagicMock()
-        tracker.update.return_value = np.array([[10, 20, 60, 120, 1, 0.95]])
-        service._trackers[2] = tracker
-        service._track_states[2] = {}
         service._recognize_persons_batch = MagicMock(return_value=[("Alice", 0.91)])
 
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
-        out = service.process_batch([(2, frame)])
+        det = RawDetection((10, 20, 60, 120), "person", 0.95)
+        with patch("server.inference.face_pipeline.yolo_runner.run_person_batch", return_value=[[det]]):
+            out = service.process_batch(
+                [(2, frame)],
+                detect_allowed={2: True},
+                recognition_allowed={2: True},
+            )
 
         assert 2 in out
         assert len(out[2]) == 1
-        det = out[2][0]
-        assert det.class_name == "person"
-        assert det.track_id == 1
-        assert det.identity == "Alice"
-        assert det.similarity == pytest.approx(0.91)
+        result = out[2][0]
+        assert result.class_name == "person"
+        assert result.track_id == 1
+        assert result.identity == "Alice"
+        assert result.similarity == pytest.approx(0.91)
 
     def test_adaptive_throttle_increases_interval_under_load(self):
         service = FacePipelineService()
         service._rec_interval_effective = 5
+        service._person_interval_ceiling_effective = 10
+        service._fire_interval_effective = 3
         with patch("server.inference.face_pipeline.settings") as mock_settings:
             mock_settings.adaptive_facial_throttle = True
             mock_settings.facial_rec_interval = 5
             mock_settings.facial_rec_interval_max = 30
             mock_settings.pipeline_lag_threshold_ms = 150.0
+            mock_settings.person_interval_max = 10
+            mock_settings.person_interval_max_ceiling = 20
+            mock_settings.fire_det_interval = 3
+            mock_settings.fire_det_interval_max = 10
             service.report_pipeline_pressure(200.0, 2)
         assert service.rec_interval_effective == 6
+        assert service._person_interval_ceiling_effective == 11
+        assert service.fire_interval_effective == 4
 
     def test_should_recognize_on_init_and_interval(self):
-        assert FacePipelineService._should_recognize(0, 5) is True
-        assert FacePipelineService._should_recognize(5, 5) is True
-        assert FacePipelineService._should_recognize(3, 5) is False
+        from server.inference.face_pipeline import TrackState
+
+        track = TrackState(track_id=1, bbox=(0, 0, 60, 80), confidence=0.9)
+        assert FacePipelineService._should_attempt_recognition(track, 5, 40) is True
+        track.rec_attempts = 5
+        assert FacePipelineService._should_attempt_recognition(track, 5, 40) is True
+        track.rec_attempts = 3
+        assert FacePipelineService._should_attempt_recognition(track, 5, 40) is False

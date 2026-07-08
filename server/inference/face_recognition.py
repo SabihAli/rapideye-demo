@@ -170,11 +170,9 @@ class FaceAnalysisApp:
         ctx_id: int = 0,
     ):
         from insightface.app import FaceAnalysis
+        from server.inference.ort_models import face_providers
 
-        if ctx_id < 0:
-            providers = ["CPUExecutionProvider"]
-        else:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        providers = ["CPUExecutionProvider"] if ctx_id < 0 else face_providers()
         self._app = FaceAnalysis(
             name=model_pack,
             providers=providers,
@@ -609,6 +607,21 @@ def process_videos_batched(
                         detect_only=detect_only,
                     )
                 )
+            # One gallery identity per frame: the track with the strongest
+            # accumulated vote keeps the name, the rest fall back to Unknown.
+            by_label: dict[str, list[Track]] = {}
+            for trk in draw_tracks:
+                if trk.label != "Unknown":
+                    by_label.setdefault(trk.label, []).append(trk)
+            for label, claimants in by_label.items():
+                if len(claimants) > 1:
+                    claimants.sort(
+                        key=lambda t: state[t.track_id]["votes"].get(label, 0.0),
+                        reverse=True,
+                    )
+                    for trk in claimants[1:]:
+                        trk.label = "Unknown"
+                        trk.similarity = 0.0
             _t = time.perf_counter()
             elapsed = time.perf_counter() - t_start
             agg_fps = total_emitted / elapsed if elapsed > 0 else 0.0
