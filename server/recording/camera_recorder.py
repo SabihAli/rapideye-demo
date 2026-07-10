@@ -105,7 +105,7 @@ class CameraRecorderManager:
         print(f"[CameraRecorder] Started recording {recording_id} for camera {camera_id}")
         return _row_to_schema(row)
 
-    def write_frame(self, camera_id: int, frame: Any) -> None:
+    def write_frame(self, camera_id: int, frame: Any, fps: Optional[float] = None) -> None:
         with self._lock:
             active = self._active.get(camera_id)
             if active is None:
@@ -117,7 +117,7 @@ class CameraRecorderManager:
                 writer = cv2.VideoWriter(
                     str(active.output_path),
                     fourcc,
-                    float(settings.base_fps),
+                    float(fps) if fps else float(settings.base_fps),
                     (w, h),
                 )
                 if not writer.isOpened():

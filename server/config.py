@@ -51,11 +51,14 @@ class Settings(BaseSettings):
 
     # --- Fire stage ------------------------------------------------------------
     # Constant every-n cadence (fire bbox geometry is too volatile for adaptive n);
-    # interpolated via a dedicated ByteTrack between detection frames. The
-    # effective interval still widens under sustained pipeline lag, same as
-    # person_interval_max_ceiling above.
-    fire_det_interval: int = 3
-    fire_det_interval_max: int = 10
+    # interpolated via a dedicated ByteTrack between detection frames. Pinned
+    # to every-other-frame, same as person_interval_min/max above: fire boxes
+    # were spending too many frames on pure Kalman interpolation with no real
+    # detection to correct them, and fire_det_interval_max let sustained
+    # pipeline lag silently widen the effective interval further still.
+    # Capping the ceiling equal to the base interval closes that off.
+    fire_det_interval: int = 2
+    fire_det_interval_max: int = 2
 
     # --- Weapon stage (person-crop gated) --------------------------------------
     # Weapon detection runs only on padded person-track crops, batched across
@@ -95,6 +98,22 @@ class Settings(BaseSettings):
     track_match_thresh: float = 0.8
     min_person_box: int = 40
     pipeline_stats_interval_sec: float = 30.0
+
+    # --- Alerting (zone intrusion / fire / weapon debounce) ---------------------
+    # zone_engine.check_detections() is a stateless per-frame check; without
+    # debounce, a single flickering frame in/out of the zone polygon mints a
+    # brand-new alert + clip every time. alert_trigger_frames requires M
+    # consecutive in-zone frames before arming a new alert; alert_clear_frames
+    # requires N consecutive no-detection frames before disarming — a brief
+    # gap shorter than that is absorbed into the same still-active alert
+    # instead of starting a new one.
+    alert_trigger_frames: int = 5
+    alert_clear_frames: int = 20
+
+    # --- Clip / recording lifecycle ----------------------------------------------
+    clip_writer_workers: int = 3          # concurrent clip-compile workers
+    recordings_retention_days: float = 30.0
+    recordings_cleanup_interval_sec: float = 3600.0
 
     # Inference toggles
     enable_entity_detection: bool = False

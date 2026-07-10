@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { ChevronRight, Play } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { VideoModal } from '@/components/ui/VideoModal'
 import { recordingUrl } from '@/lib/api'
 import { cameraFromNumId } from '@/lib/cameras'
 import { formatAlertType, formatTimestamp } from '@/context/DemoContext'
@@ -11,6 +13,8 @@ interface AlertFeedProps {
 }
 
 export function AlertFeed({ alerts }: AlertFeedProps) {
+  const [playingUrl, setPlayingUrl] = useState<string | null>(null)
+
   return (
     <Card className="flex h-full flex-col">
       <CardHeader className="border-b border-white/5 pb-4">
@@ -48,15 +52,20 @@ export function AlertFeed({ alerts }: AlertFeedProps) {
                   <span>{formatTimestamp(alert.timestamp)}</span>
                 </div>
                 {alert.clip_path && (
-                  <a
-                    href={recordingUrl(alert.clip_path)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                  >
-                    <Play className="h-3 w-3" />
-                    Play clip
-                  </a>
+                  alert.clip_ready ? (
+                    <button
+                      onClick={() => setPlayingUrl(recordingUrl(alert.clip_path!))}
+                      className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <Play className="h-3 w-3" />
+                      Play clip
+                    </button>
+                  ) : (
+                    <span className="mt-2 inline-flex items-center gap-1 text-xs text-muted">
+                      <Play className="h-3 w-3 opacity-40" />
+                      Compiling clip…
+                    </span>
+                  )
                 )}
               </div>
             )
@@ -70,6 +79,8 @@ export function AlertFeed({ alerts }: AlertFeedProps) {
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
+
+      <VideoModal src={playingUrl} onClose={() => setPlayingUrl(null)} />
     </Card>
   )
 }

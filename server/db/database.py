@@ -32,11 +32,14 @@ def get_db_path() -> Path:
     return settings.data_dir / "rapideye_demo.db"
 
 
-def init_db() -> None:
+def init_db(db_path: Optional[Path] = None) -> None:
+    """db_path lets callers (tests) point at an isolated file instead of the
+    live production DB; production code calls init_db() with no argument."""
     global _connection
     with _lock:
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        _connection = sqlite3.connect(str(get_db_path()), check_same_thread=False)
+        path = db_path if db_path is not None else get_db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _connection = sqlite3.connect(str(path), check_same_thread=False)
         _connection.row_factory = sqlite3.Row
         _connection.executescript(_SCHEMA)
         _connection.commit()

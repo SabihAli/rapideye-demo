@@ -17,3 +17,4 @@ class AlertEvent(BaseModel):
     timestamp: float = Field(..., description="Epoch timestamp when the alert event occurred.")
     detections: List[Detection] = Field(default_factory=list, description="List of detections associated with this alert.")
     clip_path: Optional[str] = Field(None, description="Path/URL to the recorded video clip of the event.")
+    clip_ready: bool = Field(False, description="Whether the clip at clip_path has finished compiling and is playable.")

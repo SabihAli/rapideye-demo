@@ -100,4 +100,7 @@ async def get_camera_recording_file(
         path=str(video_path),
         media_type="video/mp4",
         filename=f"camera_{recording.camera_id}_{recording_id}.mp4",
+        # Default is "attachment", which forces a download instead of
+        # letting the browser's <video> element play it inline.
+        content_disposition_type="inline",
     )

@@ -55,6 +55,13 @@ class InferencePipeline:
         self._alerts_lock = threading.Lock()
 
         self.active_alerts: Dict[int, Optional[str]] = {i: None for i in range(1, 5)}
+        # Consecutive-frame counters backing the alert debounce: a new alert
+        # only arms after alert_trigger_frames consecutive in-zone frames,
+        # and an active alert only disarms after alert_clear_frames
+        # consecutive no-detection frames (see _pipeline_loop). Only ever
+        # touched from the single pipeline loop thread, same as active_alerts.
+        self._alert_hit_streak: Dict[int, int] = {i: 0 for i in range(1, 5)}
+        self._alert_miss_streak: Dict[int, int] = {i: 0 for i in range(1, 5)}
         self.websockets: Dict[int, List[Any]] = {i: [] for i in range(1, 5)}
         self._ws_lock = threading.Lock()
 
@@ -68,6 +75,7 @@ class InferencePipeline:
         # off the main loop thread (see _broadcast_frame).
         self._stage_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cv-stage")
         self._broadcast_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cv-broadcast")
+        self._cleanup_last_run = 0.0
         self._stats_last_log = 0.0
         self._stats_accum: Dict[str, float] = {
             "motion_ms": 0.0,
@@ -81,6 +89,8 @@ class InferencePipeline:
 
     def start(self, clip_writer_ref=None):
         self.clip_writer = clip_writer_ref
+        if self.clip_writer is not None:
+            self.clip_writer.on_complete = self._mark_clip_ready
         if self._running:
             return
         self._running = True
@@ -302,13 +312,26 @@ class InferencePipeline:
                 latency_ms = getattr(decoder, "_last_inference_latency_ms", 0.0)
 
                 if camera_recorder.is_recording(cam_id):
-                    camera_recorder.write_frame(cam_id, frame)
+                    camera_recorder.write_frame(cam_id, frame, fps=decoder.target_fps)
 
-                is_alert, triggering = zone_engine.check_detections(cam_id, detections, w, h)
+                is_alert_now, triggering = zone_engine.check_detections(cam_id, detections, w, h)
+
+                # Debounce: zone_engine's check is a stateless per-frame test,
+                # so a new alert only arms after alert_trigger_frames (M)
+                # consecutive in-zone frames, and an already-active alert only
+                # disarms after alert_clear_frames (N) consecutive
+                # no-detection frames — a gap shorter than that is absorbed
+                # into the same alert rather than fragmenting into a new one.
+                if is_alert_now:
+                    self._alert_hit_streak[cam_id] += 1
+                    self._alert_miss_streak[cam_id] = 0
+                else:
+                    self._alert_miss_streak[cam_id] += 1
+                    self._alert_hit_streak[cam_id] = 0
 
                 alert_id = self.active_alerts[cam_id]
-                if is_alert:
-                    if alert_id is None:
+                if alert_id is None:
+                    if self._alert_hit_streak[cam_id] >= settings.alert_trigger_frames:
                         alert_id = str(uuid.uuid4())
                         self.active_alerts[cam_id] = alert_id
                         alert_detections = [Detection(**det.to_normalized(w, h)) for det in triggering]
@@ -324,8 +347,13 @@ class InferencePipeline:
                         self._save_alerts_history()
                         if self.clip_writer:
                             self.clip_writer.trigger_clip(cam_id, alert_id, decoder.ring_buffer)
-                elif alert_id is not None:
+                elif self._alert_miss_streak[cam_id] >= settings.alert_clear_frames:
                     self.active_alerts[cam_id] = None
+
+                # Overlay/broadcast reflect the debounced alert lifecycle
+                # (stays "active" through brief gaps) rather than the raw,
+                # noisy single-frame signal.
+                is_alert = self.active_alerts[cam_id] is not None
 
                 zone_config = zone_engine.get_zone(cam_id)
                 annotated = Annotator.draw_overlays(
@@ -354,6 +382,7 @@ class InferencePipeline:
 
             self._stats_accum["post_ms"] += (time.perf_counter() - t_post) * 1000.0
             self._maybe_log_pipeline_stats()
+            self._maybe_cleanup_old_recordings()
 
         print("[Pipeline] Process loop stopped.")
 
@@ -421,16 +450,103 @@ class InferencePipeline:
                     self.alerts_history = [AlertEvent(**item) for item in data]
             except Exception as exc:
                 print(f"[Pipeline] Error reading alerts history file: {exc}")
+                return
+            self._reconcile_clip_state()
+
+    def _reconcile_clip_state(self) -> None:
+        """One-time pass right after loading persisted history: entries
+        written before clip_ready existed all default to False, which would
+        otherwise show a permanent "Compiling..." state even for clips that
+        already succeeded. Reconcile against what's actually on disk instead
+        — no pending compile job survives a restart, so if the file isn't
+        there now, it never will be."""
+        changed = False
+        with self._alerts_lock:
+            for alert in self.alerts_history:
+                if alert.clip_ready or alert.clip_path is None:
+                    continue
+                if (settings.recordings_dir / f"{alert.id}.mp4").exists():
+                    alert.clip_ready = True
+                else:
+                    alert.clip_path = None
+                changed = True
+        if changed:
+            self._save_alerts_history()
 
     def _save_alerts_history(self):
+        # Held for the whole read+write, not just the serialize step: this is
+        # now called from both the pipeline loop thread (new alerts) and
+        # ClipWriter worker threads (_mark_clip_ready), so two concurrent
+        # writers racing to open/write the same file could otherwise corrupt
+        # or truncate it.
         history_file = settings.recordings_dir / "alerts_history.json"
-        try:
-            with self._alerts_lock:
+        with self._alerts_lock:
+            try:
                 serialized = [item.model_dump() for item in self.alerts_history]
-            with open(history_file, "w") as f:
-                json.dump(serialized, f, indent=4)
-        except Exception as exc:
-            print(f"[Pipeline] Error writing alerts history file: {exc}")
+                with open(history_file, "w") as f:
+                    json.dump(serialized, f, indent=4)
+            except Exception as exc:
+                print(f"[Pipeline] Error writing alerts history file: {exc}")
+
+    def _mark_clip_ready(self, alert_id: str, success: bool) -> None:
+        """ClipWriter's on_complete callback: flips clip_ready once the file
+        actually exists, instead of the alert publishing a clip_path that
+        404s until the (10s+) compile finishes. On failure, clip_path is
+        cleared too — there will never be a file to serve, so the frontend
+        should just show no clip rather than a permanently-pending one."""
+        with self._alerts_lock:
+            alert = next((a for a in self.alerts_history if a.id == alert_id), None)
+            if alert is None:
+                return
+            alert.clip_ready = success
+            if not success:
+                alert.clip_path = None
+        self._save_alerts_history()
+
+    def _maybe_cleanup_old_recordings(self) -> None:
+        now = time.time()
+        if now - self._cleanup_last_run < settings.recordings_cleanup_interval_sec:
+            return
+        self._cleanup_last_run = now
+
+        cutoff = now - settings.recordings_retention_days * 86400.0
+        with self._alerts_lock:
+            keep = [a for a in self.alerts_history if a.timestamp >= cutoff]
+            removed_ids = {a.id for a in self.alerts_history if a.timestamp < cutoff}
+            self.alerts_history = keep
+
+        removed_clips = 0
+        for alert_id in removed_ids:
+            clip_path = settings.recordings_dir / f"{alert_id}.mp4"
+            try:
+                clip_path.unlink()
+                removed_clips += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"[Pipeline] Retention: failed to delete {clip_path}: {exc}")
+
+        # Sweep clip files that no longer have a matching alert (e.g. left
+        # over from before this cleanup existed) once they're also stale.
+        known_ids = {a.id for a in keep}
+        orphans = 0
+        for clip_path in settings.recordings_dir.glob("*.mp4"):
+            if clip_path.stem in known_ids:
+                continue
+            try:
+                if clip_path.stat().st_mtime < cutoff:
+                    clip_path.unlink()
+                    orphans += 1
+            except (FileNotFoundError, OSError) as exc:
+                print(f"[Pipeline] Retention: failed to delete orphan {clip_path}: {exc}")
+
+        if removed_ids or orphans:
+            print(
+                f"[Pipeline] Retention cleanup: removed {len(removed_ids)} alerts "
+                f"({removed_clips} clips) + {orphans} orphaned clip files older than "
+                f"{settings.recordings_retention_days:.0f}d"
+            )
+            self._save_alerts_history()
 
 
 inference_pipeline = InferencePipeline()

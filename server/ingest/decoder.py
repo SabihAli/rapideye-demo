@@ -98,9 +98,19 @@ class StreamDecoder:
         print(f"[Decoder Cam {self.camera_id}] Stopped.")
 
     def _apply_native_fps(self, fps: float) -> None:
+        # Called on every (re)connect, not just the first probe. Replacing
+        # self.ring_buffer unconditionally would abandon the old object mid-
+        # clip: ClipWriter.trigger_clip() captures a specific RingBuffer
+        # reference and reads it again ~10s later for post-alert frames — if
+        # a reconnect happens in between, new frames would go to a new object
+        # while the in-flight clip keeps reading the now-frozen old one,
+        # silently truncating it. Only replace when the size actually needs
+        # to change; otherwise keep appending to the same buffer.
         if fps and fps > 0:
             self.target_fps = float(fps)
-            self.ring_buffer = RingBuffer(max_len=int(self.target_fps * 10))
+            new_max_len = int(self.target_fps * 10)
+            if new_max_len != self.ring_buffer.max_len:
+                self.ring_buffer = RingBuffer(max_len=new_max_len)
 
     def _run_nvdec(self, url: str, is_file: bool) -> bool:
         """Decode via ffmpeg NVDEC until stop/stream end. Returns False if
