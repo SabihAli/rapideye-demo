@@ -247,6 +247,9 @@ class OrtYoloDetector:
         return binding.copy_outputs_to_cpu()[0]
 
     def _decode(self, pred: np.ndarray, meta: tuple) -> np.ndarray:
+        if self.layout == "v8e2e":
+            return self._decode_e2e(pred, meta)
+
         gain, pad_x, pad_y, orig_w, orig_h = meta
         if self.layout == "v5":
             # (N, 5+nc): xywh, obj, cls scores
@@ -283,8 +286,43 @@ class OrtYoloDetector:
         ).astype(np.float32)
         return dets
 
+    def _decode_e2e(self, pred: np.ndarray, meta: tuple) -> np.ndarray:
+        """End-to-end/NMS-free architectures (YOLOv10, YOLO26, ...) export a
+        fixed-size (N, 6) [x1, y1, x2, y2, conf, cls] tensor, already NMS'd
+        and sorted by confidence descending, in letterboxed input pixel
+        coordinates. Just threshold/filter and remap to source coords — no
+        argmax or NMS needed (or wanted: re-running NMS on already-suppressed
+        boxes is redundant work at best)."""
+        gain, pad_x, pad_y, orig_w, orig_h = meta
+        confs = pred[:, 4]
+        cls_ids = pred[:, 5].astype(np.int64)
+        mask = confs >= self.conf
+        if self.keep_classes is not None:
+            mask &= np.isin(cls_ids, list(self.keep_classes))
+        if not mask.any():
+            return np.zeros((0, 6), dtype=np.float32)
+
+        xyxy = pred[mask, :4].copy()
+        confs = confs[mask]
+        cls_ids = cls_ids[mask].astype(np.float32)
+
+        xyxy[:, [0, 2]] = (xyxy[:, [0, 2]] - pad_x) / gain
+        xyxy[:, [1, 3]] = (xyxy[:, [1, 3]] - pad_y) / gain
+        xyxy[:, [0, 2]] = xyxy[:, [0, 2]].clip(0, orig_w)
+        xyxy[:, [1, 3]] = xyxy[:, [1, 3]].clip(0, orig_h)
+
+        return np.concatenate([xyxy, confs[:, None], cls_ids[:, None]], axis=1).astype(np.float32)
+
+    # Weapon checkpoints have been swapped a few times during this project
+    # (weapons_yolov8.pt: "guns", epoch20.pt/best_mgd.pt: "pistol", ...) with
+    # each bringing its own raw class names. Normalize the handgun class to a
+    # single consistent label here rather than hand-editing meta.json every
+    # time the checkpoint changes.
+    _CLASS_NAME_ALIASES = {"guns": "handgun", "gun": "handgun", "pistol": "handgun"}
+
     def class_name(self, cls_id: int) -> str:
-        return self.names.get(int(cls_id), f"class_{int(cls_id)}")
+        raw = self.names.get(int(cls_id), f"class_{int(cls_id)}")
+        return self._CLASS_NAME_ALIASES.get(raw.lower(), raw)
 
 
 def nms_xyxy(

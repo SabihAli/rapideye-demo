@@ -51,7 +51,14 @@ class Annotator:
             class_name = det.class_name.lower()
             conf = det.confidence
 
-            if det.identity is not None:
+            if class_name == "person" and det.identity is None:
+                # Plain person detection: facial recognition hasn't run on
+                # this track at all (disabled for this camera, or hasn't been
+                # attempted yet) — blue, generic "Person" label. Red/green are
+                # reserved for tracks recognition has actually processed.
+                box_color = (255, 90, 0)
+                label = f"#{det.track_id} Person" if det.track_id is not None else "Person"
+            elif det.identity is not None:
                 if det.identity != "Unknown":
                     box_color = (40, 200, 40)
                 else:

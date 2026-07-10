@@ -52,17 +52,30 @@ def _write_meta(key: str, names: dict, layout: str) -> None:
 
 
 def export_ultralytics(pt_path: Path, key: str) -> Path:
-    """Export a YOLOv8/YOLO11 checkpoint (v8 output layout)."""
+    """Export a YOLOv8/v11/v26-family checkpoint.
+
+    Most Ultralytics detectors export the raw (4+nc, N) per-anchor layout
+    ("v8"): our own argmax + NMS decodes it. Newer end-to-end/NMS-free
+    architectures (YOLOv10, YOLO26, ...) instead export a fixed-size,
+    already-NMS'd (N, 6) [x1,y1,x2,y2,conf,cls] tensor ("v8e2e") — decoding
+    that with the v8 path silently produces garbage (transposes detection
+    rows as if they were per-class score channels), so the layout has to be
+    recorded correctly at export time via the Detect head's `end2end` flag.
+    """
     from ultralytics import YOLO
 
     out_path = settings.onnx_dir / f"{key}.onnx"
     print(f"[export] {key}: {pt_path.name} -> {out_path.name}")
     model = YOLO(str(pt_path))
+    is_end2end = bool(getattr(model.model.model[-1], "end2end", False))
     exported = model.export(
         format="onnx", imgsz=IMGSZ, dynamic=True, opset=OPSET, simplify=False, device="cpu"
     )
     Path(exported).replace(out_path)
-    _write_meta(key, model.names, layout="v8")
+    layout = "v8e2e" if is_end2end else "v8"
+    if is_end2end:
+        print(f"  {key}: end-to-end (NMS-free) architecture detected -> layout={layout}")
+    _write_meta(key, model.names, layout=layout)
     return out_path
 
 

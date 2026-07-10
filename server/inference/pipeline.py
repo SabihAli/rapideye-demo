@@ -162,6 +162,21 @@ class InferencePipeline:
         output: Dict[int, List[RawDetection]] = {}
         for idx, item in enumerate(pending):
             fire_state = self._fire_states[item.camera_id]
+
+            if not item.switches.fire_enabled:
+                # Fire disabled for this camera: drop any coasting state
+                # outright instead of continuing to call predict_only().
+                # predict_only() has no detection cycle to ever mark a track
+                # lost/expire it (that's what lets it coast smoothly between
+                # real detection frames while enabled) — with fire off there
+                # is no re-detection to ever reanchor it, so Kalman
+                # predictions would keep extrapolating forever, drifting into
+                # an ever-expanding box instead of disappearing.
+                if fire_state.tracker.active_tracks():
+                    fire_state.tracker.reset()
+                output[item.camera_id] = []
+                continue
+
             if fire_mask[idx]:
                 active_tracks, _ = fire_state.tracker.update_with_detections(detected[idx], item.frame.shape)
                 fire_state.next_detect_frame = fire_state.frame_index + face_pipeline_service.fire_interval_effective

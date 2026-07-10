@@ -188,6 +188,7 @@ class FacePipelineService:
         for idx, (camera_id, frame) in enumerate(items):
             state = self._camera_states[camera_id]
             tracker = state.tracker
+            rec_allowed = True if recognition_allowed is None else recognition_allowed.get(camera_id, False)
 
             if detect_mask[idx]:
                 active_tracks, _ = tracker.update_with_detections(detections_batch[idx], frame.shape)
@@ -195,22 +196,36 @@ class FacePipelineService:
             else:
                 active_tracks = tracker.predict_only(frame.shape)
 
+            if not rec_allowed:
+                # Face rec just got turned off (or was never on) for this
+                # camera: drop any identity a track picked up earlier so it
+                # reverts to a plain "Person" box instead of keeping a stale
+                # name/Unknown label until the track is lost.
+                for track in active_tracks:
+                    if track.rec_attempts or track.label != "Unknown":
+                        self._reset_identity(track)
+
             for track in active_tracks:
                 bbox = clip_bbox(track.bbox, frame.shape)
+                # identity/similarity stay None until recognition has actually
+                # been attempted at least once on this track — the annotator
+                # uses that to tell "plain person detection" (blue, no rec
+                # run) apart from "recognition ran, no match" (red, Unknown).
+                identified = track.rec_attempts > 0
                 out[camera_id].append(
                     RawDetection(
                         bbox=bbox,
                         class_name="person",
                         confidence=track.confidence,
                         track_id=track.track_id,
-                        identity=track.label,
-                        similarity=track.similarity,
+                        identity=track.label if identified else None,
+                        similarity=track.similarity if identified else None,
                     )
                 )
                 if (
                     detect_mask[idx]
                     and face_ready
-                    and (True if recognition_allowed is None else recognition_allowed.get(camera_id, False))
+                    and rec_allowed
                     and self._should_attempt_recognition(track, self.rec_interval_effective, settings.min_person_box)
                 ):
                     rec_candidates.append((frame, bbox))
@@ -231,11 +246,22 @@ class FacePipelineService:
                         ),
                         None,
                     )
-                    if track is not None:
+                    # Only tracks recognition has actually run on get an
+                    # identity — otherwise this would stamp "Unknown" back
+                    # onto every other track in the camera regardless of the
+                    # rec_attempts gating above.
+                    if track is not None and track.rec_attempts > 0:
                         det.identity = track.label
                         det.similarity = track.similarity
 
         return out
+
+    @staticmethod
+    def _reset_identity(track: TrackState) -> None:
+        track.label = "Unknown"
+        track.similarity = 0.0
+        track.rec_attempts = 0
+        track.votes.clear()
 
 
 face_pipeline_service = FacePipelineService()
