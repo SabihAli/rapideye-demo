@@ -29,15 +29,17 @@ def test_streams_status_endpoint():
 def test_zones_crud_endpoints():
     """Tests CRUD retrieval and updates of polygon zone configuration files."""
     camera_id = 1
-    
-    # 1. Retrieve default zone
+
+    # 1. A camera with no zone file yet (or an explicitly cleared one) has
+    # zero zones by default — no auto-created full-frame zone that would
+    # alert on anything, anywhere in the picture.
     get_response = client.get(f"/api/zones/{camera_id}")
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert get_data["camera_id"] == camera_id
-    assert "polygon" in get_data
-    assert len(get_data["polygon"]) > 0
-    
+    assert get_data["polygon"] == []
+    assert get_data["alert_classes"] == []
+
     # 2. Modify zone
     test_polygon = [[0.1, 0.1], [0.5, 0.1], [0.5, 0.5], [0.1, 0.5]]
     put_payload = {
@@ -45,7 +47,7 @@ def test_zones_crud_endpoints():
         "polygon": test_polygon,
         "alert_classes": ["person", "fire"]
     }
-    
+
     put_response = client.put(f"/api/zones/{camera_id}", json=put_payload)
     assert put_response.status_code == 200
     put_data = put_response.json()
@@ -56,6 +58,15 @@ def test_zones_crud_endpoints():
     get_again = client.get(f"/api/zones/{camera_id}")
     assert get_again.status_code == 200
     assert get_again.json()["polygon"] == test_polygon
+
+    # 4. Clearing the zone (what the frontend's "Remove" button does) brings
+    # the camera back to zero zones instead of reverting to a default.
+    clear_response = client.put(
+        f"/api/zones/{camera_id}",
+        json={"camera_id": camera_id, "polygon": [], "alert_classes": []},
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.json()["polygon"] == []
 
 def test_model_switches_endpoints():
     """Verifies per-camera inference model toggle CRUD."""

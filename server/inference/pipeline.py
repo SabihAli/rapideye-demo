@@ -39,6 +39,7 @@ def _new_fire_tracker() -> ByteTrackAdapter:
         track_low_thresh=settings.track_low_thresh,
         new_track_thresh=settings.track_new_thresh,
         match_thresh=settings.track_match_thresh,
+        jump_iou_threshold=settings.track_jump_iou_threshold,
     )
 
 
@@ -66,6 +67,7 @@ class InferencePipeline:
         self._ws_lock = threading.Lock()
 
         self._last_processed_ts: Dict[int, float] = {i: 0.0 for i in range(1, 5)}
+        self._last_clip_trigger_ts: Dict[int, float] = {i: 0.0 for i in range(1, 5)}
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self.clip_writer = None
@@ -335,17 +337,30 @@ class InferencePipeline:
                         alert_id = str(uuid.uuid4())
                         self.active_alerts[cam_id] = alert_id
                         alert_detections = [Detection(**det.to_normalized(w, h)) for det in triggering]
+                        now_ts = time.time()
+                        # Clip compilation is throttled independently of the
+                        # debounce above: each clip job costs a fixed ~10s in
+                        # ClipWriter plus encode time, so a camera re-arming
+                        # faster than that would pile up unbounded raw-frame
+                        # snapshots in ClipWriter's queue (see
+                        # alert_clip_cooldown_sec). The alert itself still
+                        # records/shows live either way; it just skips the
+                        # clip when on cooldown.
+                        on_cooldown = (
+                            now_ts - self._last_clip_trigger_ts[cam_id]
+                        ) < settings.alert_clip_cooldown_sec
                         event = AlertEvent(
                             id=alert_id,
                             camera_id=cam_id,
                             alert_type=self._determine_alert_type(triggering),
-                            timestamp=time.time(),
+                            timestamp=now_ts,
                             detections=alert_detections,
-                            clip_path=f"/api/recordings/{alert_id}",
+                            clip_path=None if on_cooldown else f"/api/recordings/{alert_id}",
                         )
                         self.add_alert(event)
                         self._save_alerts_history()
-                        if self.clip_writer:
+                        if self.clip_writer and not on_cooldown:
+                            self._last_clip_trigger_ts[cam_id] = now_ts
                             self.clip_writer.trigger_clip(cam_id, alert_id, decoder.ring_buffer)
                 elif self._alert_miss_streak[cam_id] >= settings.alert_clear_frames:
                     self.active_alerts[cam_id] = None

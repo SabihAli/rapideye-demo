@@ -4,18 +4,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     camera_1_url: str = "assets/camera_1.mp4"
-    camera_2_url: str = "assets/camera_2.mp4"
-    camera_3_url: str = "assets/camera_3.mp4"
+    camera_2_url: str = "assets/office_test_far.mp4"
+    camera_3_url: str = "assets/test_video.mp4"
     camera_4_url: str = "assets/camera_4.mp4"
 
     model_entity: str = "yolo11s.pt"
     model_person: str = "yolo11n.pt"
     model_fire: str = "data/models/fire_smoke_yolov5.pt"
-    model_weapon: str = "data/models/weapons_yolov8.pt"
+    model_weapon: str = "data/models/weapon.pt"
 
     conf_entity: float = 0.5
     conf_fire: float = 0.25
-    conf_weapon: float = 0.4
+    conf_weapon: float = 0.6
     person_conf: float = 0.25
     person_imgsz: int = 640
     weapon_imgsz: int = 640
@@ -76,13 +76,32 @@ class Settings(BaseSettings):
     motion_cooldown_sec: float = 2.0     # keep gate open this long after last motion
 
     # --- Facial recognition ------------------------------------------------------
-    facial_rec_interval: int = 5
+    # Pinned to a fixed every-30th-frame cadence (min == max, so
+    # adaptive_facial_throttle has no room to shrink it under low load): more
+    # frequent attempts meant more chances for a single low-quality embedding
+    # (blur, bad angle, partial occlusion during a close pass) to corrupt a
+    # track's identity. facial_rec_interval_max is still the ceiling the
+    # backpressure logic can widen to under sustained pipeline lag.
+    facial_rec_interval: int = 30
     facial_rec_interval_max: int = 30
     adaptive_facial_throttle: bool = True
     pipeline_lag_threshold_ms: float = 150.0
     facial_match_threshold: float = 0.4
     insightface_model: str = "buffalo_l"   # buffalo_l | buffalo_m | buffalo_s
     insightface_det_size: int = 640
+    # Quality gate on the extracted face itself (not the surrounding person
+    # box) before an embedding is even matched against the gallery — see
+    # _face_embedding_from_person_crop.
+    face_min_det_score: float = 0.5
+    face_min_size_px: int = 40
+    # Identity commitment: a track needs this many recognition attempts
+    # voting for the same name (accumulated evidence, not a single
+    # prediction) before it's assigned at all. Once assigned, a competing
+    # name can only take over if its single-match similarity beats the
+    # current identity's best-seen similarity by this margin — otherwise
+    # the identity stays attached to the track through noisy re-checks.
+    identity_min_matches: int = 2
+    identity_override_margin: float = 0.15
 
     # --- Tracking (ByteTrack) ---------------------------------------------------
     # Two-stage IOU association: a track must clear track_new_thresh to be born,
@@ -96,6 +115,15 @@ class Settings(BaseSettings):
     track_low_thresh: float = 0.1
     track_new_thresh: float = 0.6
     track_match_thresh: float = 0.8
+    # BYTETracker has no appearance model — it's pure IOU/motion, so when two
+    # people's boxes overlap, its Hungarian match can swap which detection
+    # continues which track_id. A track_id's box landing at IOU below this
+    # threshold vs its own last known box (one detection cycle earlier, so
+    # ~2 frames of real motion) is the signature of that: too big a jump for
+    # normal movement, consistent with the detection now belonging to a
+    # different physical person. FacePipelineService resets identity on it
+    # rather than let a stale label ride along onto the wrong person.
+    track_jump_iou_threshold: float = 0.3
     min_person_box: int = 40
     pipeline_stats_interval_sec: float = 30.0
 
@@ -109,6 +137,13 @@ class Settings(BaseSettings):
     # instead of starting a new one.
     alert_trigger_frames: int = 5
     alert_clear_frames: int = 20
+    # Separate throttle on clip *compilation* (not the debounce above): each
+    # clip job costs a fixed ~10s (ClipWriter._compile_clip sleeps to capture
+    # post-alert frames) plus encode time, so a camera that keeps re-arming
+    # faster than that starves the fixed-size worker pool and piles up
+    # unbounded raw-frame snapshots in ClipWriter's queue. A new alert still
+    # records/shows live even on cooldown; it just won't get its own clip.
+    alert_clip_cooldown_sec: float = 15.0
 
     # --- Clip / recording lifecycle ----------------------------------------------
     clip_writer_workers: int = 3          # concurrent clip-compile workers
@@ -163,7 +198,7 @@ class Settings(BaseSettings):
 
     @property
     def facial_gallery_path(self) -> Path:
-        return self.data_dir / "facial_rec" / "gallery_built" / "gallery.json"
+        return self.data_dir / "facial_rec" / "gallery_built" / "gallery_office.json"
 
     def detector_onnx(self, key: str) -> Path:
         """Resolve the ONNX file for a detector ('person'|'fire'|'weapon'),

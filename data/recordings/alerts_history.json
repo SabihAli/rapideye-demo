@@ -1,0 +1,272 @@
+[
+    {
+        "id": "edd405fc-3802-4fcb-af87-053e139efead",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783949802.4375105,
+        "detections": [
+            {
+                "bbox": [
+                    0.5509259259259259,
+                    0.13697916666666668,
+                    0.8425925925925926,
+                    0.2640625
+                ],
+                "class_name": "fire",
+                "confidence": 0.7808773517608643
+            },
+            {
+                "bbox": [
+                    0.4648148148148148,
+                    0.0015625,
+                    0.9064814814814814,
+                    0.15572916666666667
+                ],
+                "class_name": "smoke",
+                "confidence": 0.5172886848449707
+            }
+        ],
+        "clip_path": "/api/recordings/edd405fc-3802-4fcb-af87-053e139efead",
+        "clip_ready": true
+    },
+    {
+        "id": "ae003632-3f54-4b36-b077-b9cad918fd10",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783949967.768881,
+        "detections": [
+            {
+                "bbox": [
+                    0.612037037037037,
+                    0.09895833333333333,
+                    0.7962962962962963,
+                    0.259375
+                ],
+                "class_name": "fire",
+                "confidence": 0.6957097053527832
+            }
+        ],
+        "clip_path": "/api/recordings/ae003632-3f54-4b36-b077-b9cad918fd10",
+        "clip_ready": true
+    },
+    {
+        "id": "490604b6-e5d5-4134-9a41-c01c81ca5b10",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951261.938166,
+        "detections": [
+            {
+                "bbox": [
+                    0.5175925925925926,
+                    0.10208333333333333,
+                    0.8527777777777777,
+                    0.2552083333333333
+                ],
+                "class_name": "fire",
+                "confidence": 0.7556848526000977
+            }
+        ],
+        "clip_path": "/api/recordings/490604b6-e5d5-4134-9a41-c01c81ca5b10",
+        "clip_ready": true
+    },
+    {
+        "id": "baa8787a-3a9c-45a4-a395-b6c7f4b8d754",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951392.5511882,
+        "detections": [
+            {
+                "bbox": [
+                    0.575,
+                    0.13697916666666668,
+                    0.8231481481481482,
+                    0.2677083333333333
+                ],
+                "class_name": "fire",
+                "confidence": 0.7785630226135254
+            }
+        ],
+        "clip_path": "/api/recordings/baa8787a-3a9c-45a4-a395-b6c7f4b8d754",
+        "clip_ready": true
+    },
+    {
+        "id": "b7db447d-6462-4a2e-9adc-fdbaa5dac6d4",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951409.4022355,
+        "detections": [
+            {
+                "bbox": [
+                    0.575925925925926,
+                    0.13489583333333333,
+                    0.8231481481481482,
+                    0.2682291666666667
+                ],
+                "class_name": "fire",
+                "confidence": 0.7870540618896484
+            }
+        ],
+        "clip_path": "/api/recordings/b7db447d-6462-4a2e-9adc-fdbaa5dac6d4",
+        "clip_ready": true
+    },
+    {
+        "id": "b88fdae8-fbfd-4fc3-8eb0-b2bc0b7ff0d8",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951777.452944,
+        "detections": [
+            {
+                "bbox": [
+                    0.5648148148148148,
+                    0.1265625,
+                    0.8388888888888889,
+                    0.27239583333333334
+                ],
+                "class_name": "fire",
+                "confidence": 0.7758355140686035
+            }
+        ],
+        "clip_path": "/api/recordings/b88fdae8-fbfd-4fc3-8eb0-b2bc0b7ff0d8",
+        "clip_ready": true
+    },
+    {
+        "id": "3fcb77e7-4241-4376-aa37-7e2c764a5579",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951804.8869438,
+        "detections": [
+            {
+                "bbox": [
+                    0.5787037037037037,
+                    0.13489583333333333,
+                    0.8277777777777777,
+                    0.26927083333333335
+                ],
+                "class_name": "fire",
+                "confidence": 0.8085181713104248
+            }
+        ],
+        "clip_path": "/api/recordings/3fcb77e7-4241-4376-aa37-7e2c764a5579",
+        "clip_ready": true
+    },
+    {
+        "id": "6ba50849-67ca-4d7c-8bca-ae1df900087d",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951828.2513719,
+        "detections": [
+            {
+                "bbox": [
+                    0.5685185185185185,
+                    0.12708333333333333,
+                    0.8351851851851851,
+                    0.2708333333333333
+                ],
+                "class_name": "fire",
+                "confidence": 0.7758355140686035
+            }
+        ],
+        "clip_path": "/api/recordings/6ba50849-67ca-4d7c-8bca-ae1df900087d",
+        "clip_ready": true
+    },
+    {
+        "id": "cf4ddef7-a03f-49fd-b3d6-12c873cce11f",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951848.3860152,
+        "detections": [
+            {
+                "bbox": [
+                    0.5685185185185185,
+                    0.12708333333333333,
+                    0.8342592592592593,
+                    0.2713541666666667
+                ],
+                "class_name": "fire",
+                "confidence": 0.7758355140686035
+            }
+        ],
+        "clip_path": "/api/recordings/cf4ddef7-a03f-49fd-b3d6-12c873cce11f",
+        "clip_ready": true
+    },
+    {
+        "id": "e0321ff8-20ac-4238-9ad8-fb72554ba88c",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951866.8154364,
+        "detections": [
+            {
+                "bbox": [
+                    0.5675925925925925,
+                    0.125,
+                    0.837037037037037,
+                    0.2708333333333333
+                ],
+                "class_name": "fire",
+                "confidence": 0.7944416999816895
+            }
+        ],
+        "clip_path": "/api/recordings/e0321ff8-20ac-4238-9ad8-fb72554ba88c",
+        "clip_ready": true
+    },
+    {
+        "id": "abba95d3-529d-4a43-9ba3-d13bdf2a301d",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951907.5339658,
+        "detections": [
+            {
+                "bbox": [
+                    0.5777777777777777,
+                    0.134375,
+                    0.8296296296296296,
+                    0.26979166666666665
+                ],
+                "class_name": "fire",
+                "confidence": 0.8085181713104248
+            }
+        ],
+        "clip_path": "/api/recordings/abba95d3-529d-4a43-9ba3-d13bdf2a301d",
+        "clip_ready": true
+    },
+    {
+        "id": "42289a4a-b9cd-4ed5-b527-54c03de961d5",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951933.9349759,
+        "detections": [
+            {
+                "bbox": [
+                    0.5657407407407408,
+                    0.1265625,
+                    0.8388888888888889,
+                    0.271875
+                ],
+                "class_name": "fire",
+                "confidence": 0.7758355140686035
+            }
+        ],
+        "clip_path": "/api/recordings/42289a4a-b9cd-4ed5-b527-54c03de961d5",
+        "clip_ready": true
+    },
+    {
+        "id": "4c53b4ac-14f5-4247-9a1d-e3a358d112d3",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1783951949.276249,
+        "detections": [
+            {
+                "bbox": [
+                    0.5703703703703704,
+                    0.12708333333333333,
+                    0.8324074074074074,
+                    0.2682291666666667
+                ],
+                "class_name": "fire",
+                "confidence": 0.7730622291564941
+            }
+        ],
+        "clip_path": "/api/recordings/4c53b4ac-14f5-4247-9a1d-e3a358d112d3",
+        "clip_ready": true
+    }
+]

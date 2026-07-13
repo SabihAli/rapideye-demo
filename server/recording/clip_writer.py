@@ -7,14 +7,22 @@ from typing import Callable, List, Optional, Tuple, Any
 from pathlib import Path
 from server.config import settings
 from server.ingest.ring_buffer import RingBuffer
+from server.recording.transcode import transcode_to_h264_inplace
 
 class ClipWriter:
     """
     Asynchronously compiles 20-second video clips (10s pre-alert + 10s post-alert)
     upon receiving alert triggers. Saves output as MP4 in data/recordings/.
     """
-    def __init__(self, num_workers: int = 3):
-        self.queue: queue.Queue = queue.Queue()
+    def __init__(self, num_workers: int = 3, max_queue: int = 12):
+        # Bounded: each queued task carries a full raw-frame ring-buffer
+        # snapshot (hundreds of MB). Workers are inherently slow (a fixed
+        # ~10s sleep per clip in _compile_clip before encoding even starts),
+        # so with no cap a camera that re-arms faster than the pool can drain
+        # would pile up snapshots in memory without bound. alert_clip_cooldown_sec
+        # is the primary throttle; this is the backstop — trigger_clip drops
+        # and logs instead of blocking/growing when the backstop is also hit.
+        self.queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._running = False
         self._threads: List[threading.Thread] = []
         self._num_workers = max(1, num_workers)
@@ -49,9 +57,19 @@ class ClipWriter:
         Takes a snapshot of the pre-alert frames immediately.
         """
         pre_alert_snapshot = ring_buffer.get_all()
-        # Enqueue the task
-        self.queue.put((camera_id, alert_id, ring_buffer, pre_alert_snapshot))
-        print(f"[ClipWriter] Enqueued clip request for alert {alert_id}")
+        try:
+            self.queue.put_nowait((camera_id, alert_id, ring_buffer, pre_alert_snapshot))
+            print(f"[ClipWriter] Enqueued clip request for alert {alert_id}")
+        except queue.Full:
+            print(
+                f"[ClipWriter] Queue full ({self.queue.qsize()} pending) — "
+                f"dropping clip for alert {alert_id}"
+            )
+            if self.on_complete:
+                try:
+                    self.on_complete(alert_id, False)
+                except Exception as exc:
+                    print(f"[ClipWriter] on_complete callback failed for alert {alert_id}: {exc}")
 
     def _worker_loop(self):
         print(f"[ClipWriter] Worker loop started ({threading.current_thread().name}).")
@@ -141,6 +159,13 @@ class ClipWriter:
                 out.write(frame)
         finally:
             out.release()
+
+        # OpenCV wrote MPEG-4 Part 2 (see transcode.py) — no browser can
+        # play that. Re-encode to H.264 in place; if ffmpeg fails for some
+        # reason, leave the raw file so the clip isn't lost outright, just
+        # not browser-playable.
+        if not transcode_to_h264_inplace(output_path):
+            print(f"[ClipWriter] Warning: H.264 transcode failed for alert {alert_id}; clip may not play in-browser")
 
         print(f"[ClipWriter] Successfully wrote video clip for alert {alert_id}")
         return True

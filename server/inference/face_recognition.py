@@ -26,7 +26,7 @@ import numpy as np
 
 DEFAULT_DATA_ROOT = Path("data/facial_rec")
 DEFAULT_SAMPLES_DIR = DEFAULT_DATA_ROOT / "samples"
-DEFAULT_GALLERY_JSON = DEFAULT_DATA_ROOT / "gallery_built" / "gallery.json"
+DEFAULT_GALLERY_JSON = DEFAULT_DATA_ROOT / "gallery_built" / "gallery_office.json"
 DEFAULT_OUTPUT_DIR = DEFAULT_DATA_ROOT / "output"
 DEFAULT_YOLO_MODEL = Path("data/models/yolo11n.pt")
 MAX_CAMERA_INPUTS = 4
@@ -344,7 +344,16 @@ def _face_embedding_from_person_crop(
     frame: np.ndarray,
     bbox: tuple[int, int, int, int],
     app: FaceAnalysisApp,
+    min_det_score: float = 0.0,
+    min_face_px: int = 0,
 ) -> np.ndarray | None:
+    """Quality gate: a recognition attempt that runs on a blurry, tiny, or
+    low-confidence face detection produces an unreliable embedding, and one
+    bad embedding is enough to poison a track's identity — so a candidate
+    face has to clear both a detector-confidence floor and a minimum size
+    (of the face itself, not the surrounding person box) before its
+    embedding is even extracted. Callers that don't pass thresholds get the
+    old permissive behavior (any detected face)."""
     x1, y1, x2, y2 = bbox
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
@@ -354,6 +363,12 @@ def _face_embedding_from_person_crop(
     if not faces:
         return None
     face = max(faces, key=lambda f: f.det_score)
+    if face.det_score < min_det_score:
+        return None
+    if min_face_px > 0:
+        fx1, fy1, fx2, fy2 = face.bbox
+        if (fx2 - fx1) < min_face_px or (fy2 - fy1) < min_face_px:
+            return None
     return face.embedding
 
 
@@ -362,8 +377,10 @@ def recognize_person(
     bbox: tuple[int, int, int, int],
     app: FaceAnalysisApp,
     gallery: FaceGallery,
+    min_det_score: float = 0.0,
+    min_face_px: int = 0,
 ) -> tuple[str, float] | None:
-    emb = _face_embedding_from_person_crop(frame, bbox, app)
+    emb = _face_embedding_from_person_crop(frame, bbox, app, min_det_score, min_face_px)
     if emb is None:
         return None
     return gallery.match(emb)
@@ -373,6 +390,8 @@ def recognize_persons_batch(
     items: list[tuple[np.ndarray, tuple[int, int, int, int]]],
     app: FaceAnalysisApp,
     gallery: FaceGallery,
+    min_det_score: float = 0.0,
+    min_face_px: int = 0,
 ) -> list[tuple[str, float] | None]:
     """Extract embeddings from person crops and match against gallery in one batch."""
     if not items:
@@ -383,7 +402,7 @@ def recognize_persons_batch(
     index_map: list[int] = []
 
     for i, (frame, bbox) in enumerate(items):
-        emb = _face_embedding_from_person_crop(frame, bbox, app)
+        emb = _face_embedding_from_person_crop(frame, bbox, app, min_det_score, min_face_px)
         if emb is not None:
             embeddings.append(emb)
             index_map.append(i)
@@ -1027,7 +1046,7 @@ def build_gallery_from_video(
     }
 
 
-def write_gallery_json(result: dict, out_dir: Path, filename: str = "gallery.json") -> Path:
+def write_gallery_json(result: dict, out_dir: Path, filename: str = "gallery_office.json") -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     gallery_json = out_dir / filename
     gallery_json.write_text(json.dumps(result, indent=2), encoding="utf-8")

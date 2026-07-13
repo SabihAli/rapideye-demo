@@ -41,7 +41,9 @@ export function ZoneManagementPage() {
   const [zoneName, setZoneName] = useState('')
   const [zoneType, setZoneType] = useState<ZoneType>('Restricted Zone')
   const [saving, setSaving] = useState(false)
-  const canvasRef = useRef<HTMLDivElement>(null)
+  // Bounds of the actual visible video content (letterbox-aware), not the
+  // outer 16:9 card — see CameraPreview's contentRef doc comment.
+  const contentRef = useRef<HTMLDivElement>(null)
   const lastClickTime = useRef(0)
 
   const camera = CAMERAS.find((c) => c.id === selectedCameraId) ?? CAMERAS[0]
@@ -89,7 +91,7 @@ export function ZoneManagementPage() {
   }
 
   const handleCanvasClick = (e: React.MouseEvent) => {
-    if (!isFormOpen || !placingPoints || !canvasRef.current) return
+    if (!isFormOpen || !placingPoints || !contentRef.current) return
 
     const now = Date.now()
     if (now - lastClickTime.current < 250) return
@@ -98,7 +100,7 @@ export function ZoneManagementPage() {
 
     if (draftPoints.length >= MAX_ZONE_POINTS) return
 
-    const rect = canvasRef.current.getBoundingClientRect()
+    const rect = contentRef.current.getBoundingClientRect()
     const point = toPercent(e.clientX, e.clientY, rect)
 
     const last = draftPoints[draftPoints.length - 1]
@@ -113,11 +115,11 @@ export function ZoneManagementPage() {
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isFormOpen || !placingPoints || draftPoints.length === 0 || !canvasRef.current) {
+    if (!isFormOpen || !placingPoints || draftPoints.length === 0 || !contentRef.current) {
       setCursorPoint(null)
       return
     }
-    const rect = canvasRef.current.getBoundingClientRect()
+    const rect = contentRef.current.getBoundingClientRect()
     setCursorPoint(toPercent(e.clientX, e.clientY, rect))
   }
 
@@ -205,31 +207,30 @@ export function ZoneManagementPage() {
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card className="overflow-hidden">
-            <div ref={canvasRef}>
-              <CameraPreview
-                frameSrc={stream?.frame ?? null}
-                cursor={isFormOpen && placingPoints ? 'crosshair' : 'default'}
-                onClick={handleCanvasClick}
-                onMouseMove={handleMouseMove}
-              >
-                <ZoneOverlay zones={displayZones} occupiedIds={occupied} violatedIds={violated} />
-                {isFormOpen && draftPoints.length > 0 && (
-                  <>
-                    <PolygonDraftOverlay
-                      points={draftPoints}
-                      closed={draftPoints.length >= MIN_ZONE_POINTS}
-                      cursorPoint={cursorPoint}
-                    />
-                    <DraftPointMarkers
-                      points={draftPoints}
-                      selectedIndex={selectedPointIndex}
-                      onSelect={placingPoints ? setSelectedPointIndex : undefined}
-                      interactive={placingPoints}
-                    />
-                  </>
-                )}
-              </CameraPreview>
-            </div>
+            <CameraPreview
+              frameSrc={stream?.frame ?? null}
+              cursor={isFormOpen && placingPoints ? 'crosshair' : 'default'}
+              onClick={handleCanvasClick}
+              onMouseMove={handleMouseMove}
+              contentRef={contentRef}
+            >
+              <ZoneOverlay zones={displayZones} occupiedIds={occupied} violatedIds={violated} />
+              {isFormOpen && draftPoints.length > 0 && (
+                <>
+                  <PolygonDraftOverlay
+                    points={draftPoints}
+                    closed={draftPoints.length >= MIN_ZONE_POINTS}
+                    cursorPoint={cursorPoint}
+                  />
+                  <DraftPointMarkers
+                    points={draftPoints}
+                    selectedIndex={selectedPointIndex}
+                    onSelect={placingPoints ? setSelectedPointIndex : undefined}
+                    interactive={placingPoints}
+                  />
+                </>
+              )}
+            </CameraPreview>
           </Card>
 
           {isFormOpen && selectedPointIndex !== null && placingPoints && (

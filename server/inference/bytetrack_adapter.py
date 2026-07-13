@@ -11,6 +11,18 @@ from ultralytics.trackers.byte_tracker import STrack
 from server.inference.yolo_runner import RawDetection
 
 
+def _iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 def clip_bbox(bbox: Tuple[float, float, float, float], frame_shape: Tuple[int, int, int]) -> Tuple[int, int, int, int]:
     h, w = frame_shape[:2]
     x1, y1, x2, y2 = bbox
@@ -35,6 +47,23 @@ class TrackState:
     label: str = "Unknown"
     similarity: float = 0.0
     votes: Dict[str, float] = field(default_factory=dict)
+    vote_counts: Dict[str, int] = field(default_factory=dict)
+    # Camera-local frame_index a recognition attempt is next due — cadence
+    # must be driven by elapsed frames, not by rec_attempts (which only
+    # advances when an attempt actually happens, so gating attempts on
+    # rec_attempts's own value is self-referential and never reaches
+    # anything past the first one for interval > 1).
+    next_rec_frame: int = 0
+    # Set by _to_state when this cycle's bbox has implausibly low IoU
+    # against the same track_id's last known bbox — BYTETracker is pure
+    # IOU/motion association (no appearance model), so when two people's
+    # boxes overlap, the Hungarian match can swap which detection continues
+    # which track_id. The swapped-to detection's position is generally far
+    # from where this track_id's Kalman filter predicted it, which is what
+    # this flags. Consumers (see FacePipelineService) use it to reset
+    # identity rather than let a stale label ride along onto a different
+    # physical person.
+    jumped: bool = False
 
 
 class _DetResults:
@@ -88,6 +117,7 @@ class ByteTrackAdapter:
         track_low_thresh: float = 0.1,
         new_track_thresh: float = 0.6,
         match_thresh: float = 0.8,
+        jump_iou_threshold: float = 0.3,
     ) -> None:
         self._args = SimpleNamespace(
             track_high_thresh=track_high_thresh,
@@ -101,6 +131,7 @@ class ByteTrackAdapter:
         self._class_names: List[str] = []
         self._meta: Dict[int, TrackState] = {}
         self._last_frame_shape: Tuple[int, int, int] = (1, 1, 3)
+        self._jump_iou_threshold = jump_iou_threshold
 
     def reset(self) -> None:
         # Deliberately not BYTETracker.reset(): that also calls STrack.reset_id(),
@@ -128,11 +159,14 @@ class ByteTrackAdapter:
         return ((x1 + x2) / 2.0, (y1 + y2) / 2.0, max(0.0, x2 - x1), max(0.0, y2 - y1))
 
     def _to_state(self, strack: STrack) -> TrackState:
+        is_new = strack.track_id not in self._meta
         meta = self._meta.get(strack.track_id)
         if meta is None:
             meta = TrackState(track_id=strack.track_id, bbox=(0.0, 0.0, 0.0, 0.0), confidence=0.0)
             self._meta[strack.track_id] = meta
-        meta.bbox = clip_bbox(tuple(strack.xyxy.tolist()), self._last_frame_shape)
+        new_bbox = clip_bbox(tuple(strack.xyxy.tolist()), self._last_frame_shape)
+        meta.jumped = not is_new and _iou(meta.bbox, new_bbox) < self._jump_iou_threshold
+        meta.bbox = new_bbox
         meta.confidence = float(strack.score)
         meta.class_name = self._class_name(strack.cls)
         return meta

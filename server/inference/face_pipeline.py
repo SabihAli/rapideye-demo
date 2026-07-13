@@ -18,6 +18,7 @@ def _new_tracker() -> ByteTrackAdapter:
         track_low_thresh=settings.track_low_thresh,
         new_track_thresh=settings.track_new_thresh,
         match_thresh=settings.track_match_thresh,
+        jump_iou_threshold=settings.track_jump_iou_threshold,
     )
 
 
@@ -126,13 +127,25 @@ class FacePipelineService:
         return max(1, self._fire_interval_effective)
 
     @staticmethod
-    def _should_attempt_recognition(track: TrackState, rec_interval: int, min_box: int) -> bool:
+    def _should_attempt_recognition(track: TrackState, frame_index: int, min_box: int) -> bool:
+        # Deliberately keeps periodically re-checking tracks that already
+        # have a label, not just "Unknown" ones (mirrors the reference CLI
+        # pipeline's `run` command). ByteTrack is pure IOU/motion — no
+        # appearance model — so a close pass or overlap between two people
+        # can swap which physical person a track_id follows. These re-checks
+        # don't cheaply overwrite an established identity though (see
+        # _apply_match) — they're just how a substantially-stronger
+        # competing match ever gets the chance to be observed at all.
+        #
+        # Cadence is driven by next_rec_frame (elapsed camera frames), not
+        # rec_attempts — rec_attempts only advances when an attempt actually
+        # runs, so gating on rec_attempts's own value is self-referential:
+        # once it's 1, `1 % interval` never lands on 0 again for interval > 1
+        # and no track would ever get a second attempt.
         x1, y1, x2, y2 = map(int, track.bbox)
-        if track.label != "Unknown":
-            return False
         if (y2 - y1) < min_box or (x2 - x1) < min_box:
             return False
-        return track.rec_attempts == 0 or track.rec_attempts % rec_interval == 0
+        return frame_index >= track.next_rec_frame
 
     def _dynamic_interval(self, mean_conf: float) -> int:
         low = settings.track_conf_low
@@ -152,10 +165,58 @@ class FacePipelineService:
         if match is None:
             return
         name, sim = match
-        if name != "Unknown":
-            track.votes[name] = track.votes.get(name, 0.0) + sim
-            track.similarity = sim
-            track.label = max(track.votes, key=track.votes.get)
+        if name == "Unknown":
+            return
+
+        # Every match accumulates evidence for its name, regardless of
+        # what's currently assigned (if anything). A name only ever
+        # displaces the current label by repeatedly, consistently winning
+        # recognition attempts — never by a single observation, no matter
+        # how strong that one match's similarity is. A single embedding can
+        # be spuriously confident (blur, angle, a moment of cross-talk
+        # between two overlapping person crops), and treating one such match
+        # as decisive was the actual bug behind identities flipping once and
+        # then sticking: the old code compared a single new `sim` against
+        # the bar and swapped immediately.
+        track.votes[name] = track.votes.get(name, 0.0) + sim
+        track.vote_counts[name] = track.vote_counts.get(name, 0) + 1
+
+        if track.label == "Unknown":
+            best_name = max(track.votes, key=track.votes.get)
+            if track.vote_counts[best_name] >= settings.identity_min_matches:
+                track.label = best_name
+                track.similarity = track.votes[best_name] / track.vote_counts[best_name]
+            return
+
+        if name == track.label:
+            # Reinforces the current identity: raise the bar a competing
+            # name has to clear to take over.
+            track.similarity = track.votes[name] / track.vote_counts[name]
+            return
+
+        # A different, already-attached identity: only take over once the
+        # challenger has its own accumulated evidence (identity_min_matches
+        # independent attempts, same bar as an initial commit gets) AND that
+        # accumulated evidence is substantially stronger, on average, than
+        # what's currently held — not just a lucky single match.
+        if track.vote_counts[name] < settings.identity_min_matches:
+            return
+        challenger_avg = track.votes[name] / track.vote_counts[name]
+        if challenger_avg >= track.similarity + settings.identity_override_margin:
+            track.label = name
+            track.similarity = challenger_avg
+            # Drop the displaced identity's evidence so it doesn't retain a
+            # head start if it starts winning matches again later — it has
+            # to re-earn the identity_min_matches bar from scratch, same as
+            # any other challenger.
+            track.votes = {name: track.votes[name]}
+            track.vote_counts = {name: track.vote_counts[name]}
+        # else: the challenger hasn't cleared the bar yet — ignored for now.
+        # The identity stays attached to the track (see class docstring:
+        # only track loss or a substantially stronger, corroborated match
+        # revisits it), but the challenger's votes are kept so it can keep
+        # accumulating toward a future override instead of starting over
+        # every attempt.
 
     def process_batch(
         self,
@@ -196,6 +257,8 @@ class FacePipelineService:
             else:
                 active_tracks = tracker.predict_only(frame.shape)
 
+            self._reset_jumped_tracks(active_tracks)
+
             if not rec_allowed:
                 # Face rec just got turned off (or was never on) for this
                 # camera: drop any identity a track picked up earlier so it
@@ -226,13 +289,20 @@ class FacePipelineService:
                     detect_mask[idx]
                     and face_ready
                     and rec_allowed
-                    and self._should_attempt_recognition(track, self.rec_interval_effective, settings.min_person_box)
+                    and self._should_attempt_recognition(track, state.frame_index, settings.min_person_box)
                 ):
+                    track.next_rec_frame = state.frame_index + self.rec_interval_effective
                     rec_candidates.append((frame, bbox))
                     rec_tracks.append(track)
 
         if rec_candidates and self._recognize_persons_batch is not None:
-            matches = self._recognize_persons_batch(rec_candidates, self._face_app, self._gallery)
+            matches = self._recognize_persons_batch(
+                rec_candidates,
+                self._face_app,
+                self._gallery,
+                min_det_score=settings.face_min_det_score,
+                min_face_px=settings.face_min_size_px,
+            )
             for track, match in zip(rec_tracks, matches):
                 self._apply_match(track, match)
 
@@ -254,7 +324,58 @@ class FacePipelineService:
                         det.identity = track.label
                         det.similarity = track.similarity
 
+        # Never show the same identity on two tracks in the same camera at
+        # once. A ByteTrack ID swap during an overlap (or two tracks
+        # independently, spuriously matching the same person) can otherwise
+        # have both tracks claiming the same name simultaneously. Runs every
+        # call, not just ticks where new recognition happened, since a stale
+        # duplicate from an earlier mismatch can otherwise sit in `out`
+        # unresolved on coasting frames.
+        for camera_id, detections in out.items():
+            tracks_by_id = {
+                t.track_id: t for t in self._camera_states[camera_id].tracker.active_tracks()
+            }
+            self._dedupe_identities(detections, tracks_by_id)
+
         return out
+
+    @staticmethod
+    def _dedupe_identities(detections: List[RawDetection], tracks_by_id: Dict[int, TrackState]) -> None:
+        """Mutates ``detections`` in place: if more than one shares a
+        non-Unknown identity, the one with the strongest accumulated vote for
+        that label keeps it and the rest revert to Unknown — not
+        permanently, since _should_attempt_recognition keeps re-verifying
+        every track, so a demoted track can win the name back (or pick up
+        its correct one) once its votes catch up."""
+        by_label: Dict[str, List[RawDetection]] = {}
+        for det in detections:
+            if det.identity and det.identity != "Unknown":
+                by_label.setdefault(det.identity, []).append(det)
+        for label, claimants in by_label.items():
+            if len(claimants) <= 1:
+                continue
+            claimants.sort(
+                key=lambda d: tracks_by_id[d.track_id].votes.get(label, 0.0)
+                if d.track_id in tracks_by_id
+                else 0.0,
+                reverse=True,
+            )
+            for loser in claimants[1:]:
+                loser.identity = "Unknown"
+                loser.similarity = 0.0
+
+    @classmethod
+    def _reset_jumped_tracks(cls, tracks: List[TrackState]) -> None:
+        """Drops identity on any track flagged jumped this cycle (see
+        TrackState.jumped): its box just landed somewhere its own motion
+        doesn't explain — the signature of a ByteTrack ID switch, most
+        commonly two people's boxes overlapping and separating with the
+        Hungarian match picking the wrong pairing. Better an honest
+        "Unknown" than a stale label riding along onto a different physical
+        person."""
+        for track in tracks:
+            if track.jumped and (track.rec_attempts or track.label != "Unknown"):
+                cls._reset_identity(track)
 
     @staticmethod
     def _reset_identity(track: TrackState) -> None:
@@ -262,6 +383,8 @@ class FacePipelineService:
         track.similarity = 0.0
         track.rec_attempts = 0
         track.votes.clear()
+        track.vote_counts.clear()
+        track.next_rec_frame = 0
 
 
 face_pipeline_service = FacePipelineService()
