@@ -22,9 +22,10 @@
 
 # --- Core (direct imports: cv2, numpy) --------------------------------------
 numpy==2.4.4
-pandas>=2.2.0                     # required by ultralytics/yolov5 torch.hub fire model
-seaborn>=0.13.0                   # required by ultralytics/yolov5 torch.hub fire model
-gitpython>=3.1.30                 # required by ultralytics/yolov5 torch.hub fire model
+pandas>=2.2.0
+seaborn>=0.13.0
+gitpython>=3.1.30
+scipy>=1.14.0
 opencv-python==5.0.0.93          # GUI build — required for --show live window.
                                  # For headless/file-output only, swap to:
                                  #   opencv-python-headless==5.0.0.93
@@ -32,14 +33,12 @@ opencv-python==5.0.0.93          # GUI build — required for --show live window
 
 # --- Face detection + recognition (InsightFace / SCRFD + ArcFace) -----------
 insightface==1.0.1
-onnxruntime-gpu==1.26.0          # InsightFace inference backend on GPU (CUDA 12).
-                                 # Do NOT also install `onnxruntime` (CPU) — the two
-                                 # conflict. For CPU-only, use onnxruntime instead
-                                 # and run with --face-cpu / --gpu -1.
+onnxruntime-gpu==1.24.4          # Shared ORT runtime for detectors + InsightFace.
+tensorrt-cu12==10.13.3.9         # TensorRT EP dependency used by ORT on CUDA 12.
 
 # --- Person detection (YOLO) + ByteTrack ------------------------------------
-ultralytics==8.4.84              # provides YOLO + BYTETracker
-lapx==0.9.4                      # linear-assignment backend ByteTrack needs
+ultralytics==8.4.84              # export tooling and legacy utilities
+lapx==0.9.4
 
 # --- Deep-learning runtime for YOLO (CUDA 12 build — see note above) --------
 torch==2.12.1+cu126

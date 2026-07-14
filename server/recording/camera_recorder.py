@@ -9,6 +9,7 @@ import cv2
 
 from server.config import settings
 from server.db import database as db
+from server.recording.transcode import transcode_to_h264_inplace
 from server.schemas.camera_recordings import CameraRecording
 
 
@@ -105,7 +106,7 @@ class CameraRecorderManager:
         print(f"[CameraRecorder] Started recording {recording_id} for camera {camera_id}")
         return _row_to_schema(row)
 
-    def write_frame(self, camera_id: int, frame: Any) -> None:
+    def write_frame(self, camera_id: int, frame: Any, fps: Optional[float] = None) -> None:
         with self._lock:
             active = self._active.get(camera_id)
             if active is None:
@@ -117,7 +118,7 @@ class CameraRecorderManager:
                 writer = cv2.VideoWriter(
                     str(active.output_path),
                     fourcc,
-                    float(settings.base_fps),
+                    float(fps) if fps else float(settings.base_fps),
                     (w, h),
                 )
                 if not writer.isOpened():
@@ -169,6 +170,17 @@ class CameraRecorderManager:
 
         if active.writer is not None:
             active.writer.release()
+
+        # OpenCV wrote MPEG-4 Part 2 (see transcode.py) — no browser can
+        # play that. Re-encode to H.264 in place; if ffmpeg fails, leave the
+        # raw file so the recording isn't lost outright, just not
+        # browser-playable.
+        if active.frame_count > 0 and active.output_path.exists():
+            if not transcode_to_h264_inplace(active.output_path):
+                print(
+                    f"[CameraRecorder] Warning: H.264 transcode failed for "
+                    f"{active.recording_id}; recording may not play in-browser"
+                )
 
         file_size = active.output_path.stat().st_size if active.output_path.exists() else 0
         status = "completed" if active.frame_count > 0 and file_size > 0 else "failed"

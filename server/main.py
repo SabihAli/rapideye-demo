@@ -6,7 +6,6 @@ from server.config import settings
 from server.ingest.stream_manager import stream_manager
 from server.recording.clip_writer import clip_writer
 from server.inference.pipeline import inference_pipeline
-from server.inference.scheduler import fps_scheduler
 from server.inference.yolo_runner import yolo_runner
 from server.inference.face_pipeline import face_pipeline_service
 from server.schemas.status import SystemHealth
@@ -31,14 +30,11 @@ async def lifespan(app: FastAPI):
     clip_writer.start()
     # 3. Start the main inference and distribution pipeline
     inference_pipeline.start(clip_writer_ref=clip_writer)
-    # 4. Start the adaptive scheduler
-    fps_scheduler.start(stream_manager_ref=stream_manager)
     
     yield
     
     # Shutdown Sequence
     print("[main] Stopping RapidEye demo backend services...")
-    fps_scheduler.stop()
     inference_pipeline.stop()
     clip_writer.stop()
     camera_recorder.stop_all()
@@ -88,4 +84,3 @@ async def get_streams_status():
     Returns the real-time decoding FPS and error statuses of all 4 cameras.
     """
     return stream_manager.get_streams_status()
-

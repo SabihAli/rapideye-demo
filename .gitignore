@@ -16,29 +16,6 @@ build/
 web/node_modules/
 web/dist/
 
-# Runtime data
-data/*
-data/models/*
-!data/models/.gitkeep
-data/models/fire_smoke_yolov5.pt
-data/models/weapons_yolov8.pt
-data/zones/*
-!data/zones/.gitkeep
-data/recordings/*
-!data/recordings/.gitkeep
-data/facial_rec/gallery.json
-data/facial_rec/output/*
-!data/facial_rec/output/.gitkeep
-data/facial_rec/gallery_built/*
-!data/facial_rec/gallery_built/.gitkeep
-data/facial_rec/samples/*
-!data/facial_rec/samples/.gitkeep
-!data/facial_rec/.gitkeep
-data/recordings/cameras/**
-data/*.db
-data/videos/*
-!data/videos/.gitkeep
-
 # IDE
 .idea/
 .vscode/
@@ -50,3 +27,6 @@ data/videos/*
 # OS
 .DS_Store
 Thumbs.db
+
+
+data/facial_rec/samples/*

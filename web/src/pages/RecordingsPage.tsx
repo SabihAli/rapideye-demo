@@ -3,6 +3,7 @@ import { Circle, Play, RefreshCw } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { VideoModal } from '@/components/ui/VideoModal'
 import { getAllCameraRecordings, recordingUrl } from '@/lib/api'
 import { CAMERAS, cameraFromNumId } from '@/lib/cameras'
 import { formatTimestamp } from '@/context/DemoContext'
@@ -26,6 +27,7 @@ export function RecordingsPage() {
   const [recordings, setRecordings] = useState<CameraRecording[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [playingUrl, setPlayingUrl] = useState<string | null>(null)
 
   const loadRecordings = async () => {
     setLoading(true)
@@ -113,15 +115,13 @@ export function RecordingsPage() {
                     </div>
 
                     {recording.status === 'completed' && (
-                      <a
-                        href={recordingUrl(recording.playback_url)}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        onClick={() => setPlayingUrl(recordingUrl(recording.playback_url))}
                         className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-primary hover:border-white/20"
                       >
                         <Play className="h-3.5 w-3.5" />
                         Play
-                      </a>
+                      </button>
                     )}
                   </div>
                 )
@@ -130,6 +130,8 @@ export function RecordingsPage() {
           )}
         </CardContent>
       </Card>
+
+      <VideoModal src={playingUrl} onClose={() => setPlayingUrl(null)} />
     </div>
   )
 }

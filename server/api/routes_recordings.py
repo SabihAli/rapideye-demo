@@ -19,5 +19,8 @@ async def get_recording(
     return FileResponse(
         path=str(video_path),
         media_type="video/mp4",
-        filename=f"{alert_id}.mp4"
+        filename=f"{alert_id}.mp4",
+        # Default is "attachment", which forces a download instead of
+        # letting the browser's <video> element play it inline.
+        content_disposition_type="inline",
     )

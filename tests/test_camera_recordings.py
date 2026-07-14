@@ -8,9 +8,13 @@ from server.recording.camera_recorder import camera_recorder
 
 
 @pytest.fixture
-def client():
-    """Lightweight client — no stream decoders or inference pipeline."""
-    init_db()
+def client(tmp_path):
+    """Lightweight client — no stream decoders or inference pipeline.
+
+    Uses an isolated DB file under pytest's tmp_path rather than the real
+    production database (init_db() with no args would resolve to the live
+    data/rapideye_demo.db and pollute it with test rows on every run)."""
+    init_db(tmp_path / "test_recordings.db")
     app = FastAPI()
     app.include_router(router)
     with TestClient(app) as test_client:

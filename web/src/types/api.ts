@@ -44,6 +44,7 @@ export interface AlertEvent {
   timestamp: number
   detections: ApiDetection[]
   clip_path?: string | null
+  clip_ready: boolean
 }
 
 export interface CameraRecording {

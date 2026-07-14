@@ -1,0 +1,9 @@
+{
+  "names": {
+    "0": "fire",
+    "1": "smoke"
+  },
+  "layout": "v5",
+  "input_name": "images",
+  "imgsz": 640
+}

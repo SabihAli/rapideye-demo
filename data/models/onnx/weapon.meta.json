@@ -1,0 +1,13 @@
+{
+  "names": {
+    "0": "pistol",
+    "1": "knife",
+    "2": "smartphone",
+    "3": "monedero",
+    "4": "billete",
+    "5": "tarjeta"
+  },
+  "layout": "v8e2e",
+  "input_name": "images",
+  "imgsz": 640
+}

@@ -32,14 +32,12 @@ class ZoneEngine:
                 except Exception as e:
                     print(f"[ZoneEngine] Error loading zone file for camera {cam_id}: {e}")
             else:
-                # Initialize default zone covering the full frame
-                default_polygon = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
-                self.zones[cam_id] = ZoneConfig(
-                    camera_id=cam_id, 
-                    polygon=default_polygon,
-                    alert_classes=["person", "vehicle", "fire", "smoke", "handgun", "rifle", "pistol", "knife"]
-                )
-                self.save_zone(cam_id, self.zones[cam_id])
+                # No zone file yet: default to an empty zone (no polygon),
+                # not persisted — a camera with no user-drawn zone should
+                # have zero zones, not a full-frame zone that alerts on
+                # anything, anywhere in the picture. check_detections()
+                # already treats an empty polygon as "no zone configured".
+                self.zones[cam_id] = ZoneConfig(camera_id=cam_id, polygon=[], alert_classes=[])
 
     def get_zone(self, camera_id: int) -> ZoneConfig:
         """Gets the current zone configuration for a camera."""
