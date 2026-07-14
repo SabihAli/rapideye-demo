@@ -3,11 +3,6 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    camera_1_url: str = "assets/camera_1.mp4"
-    camera_2_url: str = "assets/camera_2.mp4"
-    camera_3_url: str = "assets/test_video.mp4"
-    camera_4_url: str = "assets/camera_4.mp4"
-
     model_entity: str = "yolo11s.pt"
     model_person: str = "yolo11n.pt"
     model_fire: str = "data/models/fire_smoke_yolov5.pt"
@@ -182,6 +177,10 @@ class Settings(BaseSettings):
     track_proximity_thresh: float = 0.5
     track_appearance_thresh: float = 0.25
 
+    # --- Camera management (add/remove via /api/cameras, max 4 slots) ----------
+    camera_upload_max_bytes: int = 500 * 1024 * 1024
+    camera_upload_allowed_ext: set[str] = {".mp4", ".mov", ".avi", ".mkv"}
+
     # --- Alerting (zone intrusion / fire / weapon debounce) ---------------------
     # zone_engine.check_detections() is a stateless per-frame check; without
     # debounce, a single flickering frame in/out of the zone polygon mints a
@@ -225,6 +224,7 @@ class Settings(BaseSettings):
     recordings_dir: Path = project_root / "data" / "recordings"
     camera_recordings_dir: Path = project_root / "data" / "recordings" / "cameras"
     models_dir: Path = project_root / "data" / "models"
+    videos_uploads_dir: Path = project_root / "data" / "videos" / "uploads"
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parent.parent / ".env"),
@@ -240,6 +240,7 @@ class Settings(BaseSettings):
         self.recordings_dir.mkdir(parents=True, exist_ok=True)
         self.camera_recordings_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        self.videos_uploads_dir.mkdir(parents=True, exist_ok=True)
         self.onnx_dir.mkdir(parents=True, exist_ok=True)
         self.trt_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -271,15 +272,5 @@ class Settings(BaseSettings):
             if int8_path.is_file():
                 return int8_path
         return self.onnx_dir / f"{key}.onnx"
-
-    def get_camera_url(self, camera_id: int) -> str:
-        """Helper to get URL by camera_id index (1-4)."""
-        mapping = {
-            1: self.camera_1_url,
-            2: self.camera_2_url,
-            3: self.camera_3_url,
-            4: self.camera_4_url
-        }
-        return mapping.get(camera_id, "")
 
 settings = Settings()

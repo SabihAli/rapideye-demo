@@ -15,17 +15,19 @@ from server.api.routes_alerts import router as alerts_router
 from server.api.routes_recordings import router as recordings_router
 from server.api.routes_camera_recordings import router as camera_recordings_router
 from server.api.routes_model_switches import router as model_switches_router
+from server.api.routes_cameras import router as cameras_router
 from server.api.ws_streams import router as ws_router
 from server.db.database import init_db, close_db
 from server.recording.camera_recorder import camera_recorder
+from server.inference.camera_registry import camera_registry
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup Sequence
     print("[main] Starting RapidEye demo backend services...")
     init_db()
-    # 1. Start stream ingestion decoders
-    stream_manager.start_all()
+    # 1. Start stream ingestion decoders for all persisted cameras
+    camera_registry.load_and_start_all()
     # 2. Start the recording clip writer queue
     clip_writer.start()
     # 3. Start the main inference and distribution pipeline
@@ -63,13 +65,15 @@ app.include_router(alerts_router)
 app.include_router(recordings_router)
 app.include_router(model_switches_router)
 app.include_router(camera_recordings_router)
+app.include_router(cameras_router)
 app.include_router(ws_router)
 
 @app.get("/api/health", response_model=SystemHealth, tags=["System"])
 async def get_health():
     """
     Returns system status including GPU CUDA availability, loaded AI models,
-    and individual statuses for the 4 camera feeds.
+    and individual statuses for each currently-registered camera (see
+    /api/cameras to add/remove cameras; up to 4 at a time).
     """
     return SystemHealth(
         gpu_available=torch.cuda.is_available() and yolo_runner.device.type == "cuda",
@@ -81,6 +85,6 @@ async def get_health():
 @app.get("/api/streams/status", tags=["System"])
 async def get_streams_status():
     """
-    Returns the real-time decoding FPS and error statuses of all 4 cameras.
+    Returns the real-time decoding FPS and error statuses of each currently-registered camera.
     """
     return stream_manager.get_streams_status()

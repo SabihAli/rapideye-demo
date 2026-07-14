@@ -57,6 +57,7 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic-settings>=2.6.0
 python-dotenv>=1.0.0
+python-multipart>=0.0.9          # required by FastAPI to parse multipart/form-data (camera add: Form + UploadFile)
 
 # --- Dev / test --------------------------------------------------------------
 pytest>=8.0.0

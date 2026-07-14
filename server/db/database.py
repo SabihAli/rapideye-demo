@@ -25,6 +25,15 @@ CREATE INDEX IF NOT EXISTS idx_camera_recordings_camera_id
     ON camera_recordings(camera_id);
 CREATE INDEX IF NOT EXISTS idx_camera_recordings_started_at
     ON camera_recordings(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS cameras (
+    camera_id INTEGER PRIMARY KEY CHECK(camera_id BETWEEN 1 AND 4),
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('url', 'file')),
+    source_value TEXT NOT NULL,
+    original_filename TEXT,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -129,4 +138,46 @@ def list_recordings(
                 """,
                 (camera_id, limit, offset),
             ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def insert_camera(row: Dict[str, Any]) -> None:
+    with _lock:
+        conn = _conn()
+        conn.execute(
+            """
+            INSERT INTO cameras (
+                camera_id, name, source_type, source_value,
+                original_filename, created_at
+            ) VALUES (
+                :camera_id, :name, :source_type, :source_value,
+                :original_filename, :created_at
+            )
+            """,
+            row,
+        )
+        conn.commit()
+
+
+def delete_camera(camera_id: int) -> None:
+    with _lock:
+        conn = _conn()
+        conn.execute("DELETE FROM cameras WHERE camera_id = ?", (camera_id,))
+        conn.commit()
+
+
+def get_camera(camera_id: int) -> Optional[Dict[str, Any]]:
+    with _lock:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT * FROM cameras WHERE camera_id = ?",
+            (camera_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_cameras() -> List[Dict[str, Any]]:
+    with _lock:
+        conn = _conn()
+        rows = conn.execute("SELECT * FROM cameras ORDER BY camera_id ASC").fetchall()
         return [dict(row) for row in rows]

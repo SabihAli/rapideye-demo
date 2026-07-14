@@ -5,21 +5,25 @@ from server.config import settings
 client = TestClient(app)
 
 def test_health_endpoint():
-    """Verifies that the /api/health GET endpoint returns valid system schema."""
+    """Verifies that the /api/health GET endpoint returns valid system schema.
+
+    `streams` now reflects however many cameras are currently registered via
+    /api/cameras (0-4) rather than a hardcoded 4 — see CameraRegistry/
+    StreamManager.get_streams_status()."""
     response = client.get("/api/health")
     assert response.status_code == 200
     data = response.json()
     assert "gpu_available" in data
     assert "models_loaded" in data
     assert "streams" in data
-    assert len(data["streams"]) == 4
+    assert isinstance(data["streams"], list)
 
 def test_streams_status_endpoint():
     """Verifies the /api/streams/status GET endpoint output structure."""
     response = client.get("/api/streams/status")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 4
+    assert isinstance(data, list)
     for stream in data:
         assert "camera_id" in stream
         assert "is_active" in stream
