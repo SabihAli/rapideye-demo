@@ -325,6 +325,108 @@ class OrtYoloDetector:
         return self._CLASS_NAME_ALIASES.get(raw.lower(), raw)
 
 
+class OrtReidEncoder:
+    """Batched appearance-embedding (ReID) encoder for BoT-SORT tracker fusion.
+
+    Output feeds directly into ByteTrackAdapter's ``feats=`` param (see
+    ultralytics ``BYTETracker.update``/``BOTSORT.get_dists``) to fuse
+    appearance with IOU/motion in the association step itself — it is never
+    matched against a named gallery or exposed outside the tracker layer.
+    Deliberately not routed through ultralytics' own ``AutoBackend``-based
+    ``ReID`` loader (``ultralytics/trackers/utils/reid.py``): this project's
+    whole inference stack is onnxruntime-gpu + TensorRT (see module
+    docstring), so this class mirrors ``OrtYoloDetector``'s loading/IO-binding
+    pattern instead of adding a second inference backend.
+    """
+
+    def __init__(
+        self,
+        onnx_path: str | Path,
+        *,
+        name: str = "reid",
+        imgsz: int = 224,
+        max_batch: int | None = None,
+    ):
+        import onnxruntime as ort
+
+        self.path = Path(onnx_path)
+        if not self.path.is_file():
+            self._download(self.path)
+
+        self.name = name
+        self.imgsz = imgsz
+        self.max_batch = max_batch or settings.ort_max_batch
+
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = build_providers(
+            cache_name=name,
+            input_name="images",
+            imgsz=imgsz,
+            max_batch=self.max_batch,
+        )
+        try:
+            self.session = ort.InferenceSession(str(self.path), sess_options, providers=providers)
+        except Exception as exc:
+            print(f"[OrtModels] {name}: TRT session failed ({exc}); retrying CUDA/CPU.")
+            self.session = ort.InferenceSession(
+                str(self.path), sess_options, providers=build_providers(cache_name=name, with_trt=False)
+            )
+        self.input_name = self.session.get_inputs()[0].name
+        self.active_provider = self.session.get_providers()[0]
+        print(f"[OrtModels] {name}: {self.path.name} on {self.active_provider} (imgsz={imgsz})")
+
+    @staticmethod
+    def _download(dest: Path) -> None:
+        """``dest``'s filename must match one of ultralytics' published ReID
+        release assets (e.g. ``yolo26n-reid.onnx``, see ``REID_ASSETS`` in
+        ``ultralytics/trackers/utils/reid.py``) — the name is what's matched
+        against the GitHub release, not the ``settings.model_reid`` value in
+        isolation, so callers must resolve the path with that filename."""
+        from ultralytics.utils.downloads import attempt_download_asset
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        attempt_download_asset(dest)
+
+    def warmup(self) -> None:
+        """Build/load TRT engines up-front so the first real tick isn't slow."""
+        for b in (1, min(4, self.max_batch)):
+            blob = np.zeros((b, 3, self.imgsz, self.imgsz), dtype=np.float32)
+            self._run(blob)
+
+    def _preprocess(self, crops: List[np.ndarray]) -> np.ndarray:
+        # Plain resize (no letterbox padding) + /255, matching ultralytics'
+        # own ReID preprocessing (utils/reid.py's _crops_to_tensor) rather
+        # than OrtYoloDetector's letterbox: crops are already tight person
+        # boxes, not full frames needing aspect-preserving padding.
+        blobs = []
+        for crop in crops:
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(rgb, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+            blobs.append(resized.transpose(2, 0, 1))
+        return np.ascontiguousarray(np.stack(blobs), dtype=np.float32) / 255.0
+
+    def encode(self, crops: List[np.ndarray]) -> np.ndarray:
+        """Returns (N, D) L2-normalized float32 embeddings; chunks internally at max_batch."""
+        if not crops:
+            return np.zeros((0, 0), dtype=np.float32)
+        chunks: List[np.ndarray] = []
+        for start in range(0, len(crops), self.max_batch):
+            blob = self._preprocess(crops[start : start + self.max_batch])
+            chunks.append(self._run(blob))
+        out = np.concatenate(chunks, axis=0)
+        norms = np.linalg.norm(out, axis=1, keepdims=True)
+        return out / np.maximum(norms, 1e-12)
+
+    def _run(self, blob: np.ndarray) -> np.ndarray:
+        binding = self.session.io_binding()
+        binding.bind_cpu_input(self.input_name, blob)
+        for output in self.session.get_outputs():
+            binding.bind_output(output.name)
+        self.session.run_with_iobinding(binding)
+        return binding.copy_outputs_to_cpu()[0]
+
+
 def nms_xyxy(
     boxes: np.ndarray, scores: np.ndarray, cls_ids: np.ndarray, iou_thresh: float
 ) -> np.ndarray:

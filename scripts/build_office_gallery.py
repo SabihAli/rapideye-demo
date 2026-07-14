@@ -10,7 +10,7 @@ Usage:
 
 Writes:
     data/facial_rec/gallery_built/gallery_office.json  (labelled copy)
-    data/facial_rec/gallery_built/gallery.json          (live gallery, used
+    data/facial_rec/gallery_built/gallery_P1E_S2_C1.json          (live gallery, used
                                                            by FacePipelineService)
 """
 from __future__ import annotations
@@ -81,7 +81,7 @@ def main() -> int:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=settings.data_dir / "facial_rec" / "gallery_built",
+        default=settings.facial_gallery_dir,
     )
     parser.add_argument("--gpu", type=int, default=0, help="GPU device id (-1 for CPU)")
     args = parser.parse_args()
@@ -104,8 +104,8 @@ def main() -> int:
         return 1
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    office_path = write_gallery_json(result, args.output_dir, filename="gallery_office.json")
-    live_path = write_gallery_json(result, args.output_dir, filename="gallery.json")
+    office_path = write_gallery_json(result, args.output_dir, filename=settings.facial_gallery_office_filename)
+    live_path = write_gallery_json(result, args.output_dir, filename=settings.facial_gallery_filename)
     print(f"\nGallery ready: {office_path} ({len(result['identities'])} identities)")
     print(f"Live gallery updated: {live_path}  <- FacePipelineService reads this path")
     return 0

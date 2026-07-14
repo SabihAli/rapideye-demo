@@ -3,7 +3,7 @@
   "identities": [
     {
       "identity_id": "0001",
-      "display_name": "Person_0001",
+      "display_name": "João",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -523,7 +523,7 @@
     },
     {
       "identity_id": "0003",
-      "display_name": "Person_0003",
+      "display_name": "Pedro",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -1043,7 +1043,7 @@
     },
     {
       "identity_id": "0004",
-      "display_name": "Person_0004",
+      "display_name": "Lucas",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -1563,7 +1563,7 @@
     },
     {
       "identity_id": "0005",
-      "display_name": "Person_0005",
+      "display_name": "Gabriel",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -2083,7 +2083,7 @@
     },
     {
       "identity_id": "0006",
-      "display_name": "Person_0006",
+      "display_name": "Matheus",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -2603,7 +2603,7 @@
     },
     {
       "identity_id": "0007",
-      "display_name": "Person_0007",
+      "display_name": "Rafael",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -3123,7 +3123,7 @@
     },
     {
       "identity_id": "0009",
-      "display_name": "Person_0009",
+      "display_name": "Gustavo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -3643,7 +3643,7 @@
     },
     {
       "identity_id": "0010",
-      "display_name": "Person_0010",
+      "display_name": "Bruno",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -4163,7 +4163,7 @@
     },
     {
       "identity_id": "0011",
-      "display_name": "Person_0011",
+      "display_name": "Felipe",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -4683,7 +4683,7 @@
     },
     {
       "identity_id": "0012",
-      "display_name": "Person_0012",
+      "display_name": "Larissa",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -5203,7 +5203,7 @@
     },
     {
       "identity_id": "0013",
-      "display_name": "Person_0013",
+      "display_name": "Rodrigo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -5723,7 +5723,7 @@
     },
     {
       "identity_id": "0014",
-      "display_name": "Person_0014",
+      "display_name": "Thiago",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -6243,7 +6243,7 @@
     },
     {
       "identity_id": "0015",
-      "display_name": "Person_0015",
+      "display_name": "Diego",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -6763,7 +6763,7 @@
     },
     {
       "identity_id": "0016",
-      "display_name": "Person_0016",
+      "display_name": "Leonardo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -7283,7 +7283,7 @@
     },
     {
       "identity_id": "0017",
-      "display_name": "Person_0017",
+      "display_name": "Vinícius",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -7803,7 +7803,7 @@
     },
     {
       "identity_id": "0018",
-      "display_name": "Person_0018",
+      "display_name": "Eduardo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -8323,7 +8323,7 @@
     },
     {
       "identity_id": "0019",
-      "display_name": "Person_0019",
+      "display_name": "Fernando",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -8843,7 +8843,7 @@
     },
     {
       "identity_id": "0020",
-      "display_name": "Person_0020",
+      "display_name": "Ricardo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -9363,7 +9363,7 @@
     },
     {
       "identity_id": "0021",
-      "display_name": "Person_0021",
+      "display_name": "Marcelo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -9883,7 +9883,7 @@
     },
     {
       "identity_id": "0022",
-      "display_name": "Person_0022",
+      "display_name": "André",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -10403,7 +10403,7 @@
     },
     {
       "identity_id": "0023",
-      "display_name": "Person_0023",
+      "display_name": "Daniel",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -10923,7 +10923,7 @@
     },
     {
       "identity_id": "0024",
-      "display_name": "Person_0024",
+      "display_name": "Carlos",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -11443,7 +11443,7 @@
     },
     {
       "identity_id": "0025",
-      "display_name": "Person_0025",
+      "display_name": "Paulo",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [
@@ -11963,7 +11963,7 @@
     },
     {
       "identity_id": "0026",
-      "display_name": "Person_0026",
+      "display_name": "Beatriz",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 1,
       "embedding": [
@@ -12483,7 +12483,7 @@
     },
     {
       "identity_id": "0027",
-      "display_name": "Person_0027",
+      "display_name": "Renato",
       "sequence": "P1E_S2_C1",
       "num_enrollment_crops": 5,
       "embedding": [

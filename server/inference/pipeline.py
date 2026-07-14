@@ -313,9 +313,6 @@ class InferencePipeline:
                 h, w, _ = frame.shape
                 latency_ms = getattr(decoder, "_last_inference_latency_ms", 0.0)
 
-                if camera_recorder.is_recording(cam_id):
-                    camera_recorder.write_frame(cam_id, frame, fps=decoder.target_fps)
-
                 is_alert_now, triggering = zone_engine.check_detections(cam_id, detections, w, h)
 
                 # Debounce: zone_engine's check is a stateless per-frame test,
@@ -380,6 +377,17 @@ class InferencePipeline:
                     latency_ms=latency_ms,
                     camera_id=cam_id,
                 )
+
+                # Recordings (both alert clips and manual recordings) save
+                # the annotated frame, not the raw one, so a saved clip shows
+                # the same boxes/labels/zone overlay a live viewer would see.
+                # This runs unconditionally every tick regardless of whether
+                # any websocket client is subscribed (the "no subscribers"
+                # early-out lives inside _broadcast_frame, downstream of
+                # here), so recordings aren't affected by live-viewer state.
+                decoder.ring_buffer.append(time.time(), annotated)
+                if camera_recorder.is_recording(cam_id):
+                    camera_recorder.write_frame(cam_id, annotated, fps=decoder.target_fps)
 
                 # JPEG-encode + base64 + WS-queue push is pure CPU work with no
                 # dependency on the next tick's inference; run it on a worker

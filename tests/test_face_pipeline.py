@@ -79,7 +79,7 @@ class TestFacePipelineService:
         service._loaded = True
         service._face_app = MagicMock()
         service._gallery = MagicMock()
-        service._recognize_persons_batch = MagicMock(return_value=[("Alice", 0.91)])
+        service._recognize_persons_batch = MagicMock(return_value=[(("Alice", 0.91), True)])
 
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         det = RawDetection((10, 20, 60, 120), "person", 0.95)
@@ -117,7 +117,7 @@ class TestFacePipelineService:
         service._loaded = True
         service._face_app = MagicMock()
         service._gallery = MagicMock()
-        service._recognize_persons_batch = MagicMock(return_value=[("Alice", 0.6)])
+        service._recognize_persons_batch = MagicMock(return_value=[(("Alice", 0.6), True)])
 
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         det = RawDetection((10, 20, 60, 120), "person", 0.95)
@@ -261,7 +261,9 @@ class TestDedupeIdentities:
         service._face_app = MagicMock()
         service._gallery = MagicMock()
         # Track 1 matches "Ammer" more confidently than track 2 does.
-        service._recognize_persons_batch = MagicMock(return_value=[("Ammer", 0.9), ("Ammer", 0.4)])
+        service._recognize_persons_batch = MagicMock(
+            return_value=[(("Ammer", 0.9), True), (("Ammer", 0.4), True)]
+        )
 
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         det_a = RawDetection((10, 20, 60, 220), "person", 0.95)
@@ -294,15 +296,15 @@ class TestApplyMatch:
 
     def test_single_match_does_not_commit_an_identity(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.8))
+        FacePipelineService._apply_match(track, ("Ammer", 0.8), face_seen=True)
         assert track.label == "Unknown"
         assert track.rec_attempts == 1
         assert track.votes["Ammer"] == pytest.approx(0.8)
 
     def test_second_consistent_match_commits_the_identity(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.8))
-        FacePipelineService._apply_match(track, ("Ammer", 0.7))
+        FacePipelineService._apply_match(track, ("Ammer", 0.8), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.7), face_seen=True)
         assert track.label == "Ammer"
         assert track.rec_attempts == 2
         # similarity is the average of the accumulated matches for the name.
@@ -310,22 +312,22 @@ class TestApplyMatch:
 
     def test_split_votes_do_not_commit_until_one_name_reaches_the_threshold(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.6))
-        FacePipelineService._apply_match(track, ("Mohsin", 0.6))
+        FacePipelineService._apply_match(track, ("Ammer", 0.6), face_seen=True)
+        FacePipelineService._apply_match(track, ("Mohsin", 0.6), face_seen=True)
         # Neither name has 2 matches yet — still Unknown despite 2 attempts.
         assert track.label == "Unknown"
-        FacePipelineService._apply_match(track, ("Ammer", 0.6))
+        FacePipelineService._apply_match(track, ("Ammer", 0.6), face_seen=True)
         assert track.label == "Ammer"
 
     def test_weak_competing_match_is_ignored_once_identified(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.8))
-        FacePipelineService._apply_match(track, ("Ammer", 0.8))
+        FacePipelineService._apply_match(track, ("Ammer", 0.8), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.8), face_seen=True)
         assert track.label == "Ammer"
 
         # A different identity that isn't substantially stronger must not
         # take over — this is the "stays attached to the track" guarantee.
-        FacePipelineService._apply_match(track, ("Mohsin", 0.81))
+        FacePipelineService._apply_match(track, ("Mohsin", 0.81), face_seen=True)
         assert track.label == "Ammer"
 
     def test_single_strong_match_does_not_override_even_if_it_clears_the_margin(self):
@@ -336,27 +338,27 @@ class TestApplyMatch:
         like an initial commit does. Comparing one fresh `sim` straight
         against the bar and swapping immediately was the bug."""
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.5))
-        FacePipelineService._apply_match(track, ("Ammer", 0.5))
+        FacePipelineService._apply_match(track, ("Ammer", 0.5), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.5), face_seen=True)
         assert track.label == "Ammer"
 
         # Clears similarity (0.5) + override margin (0.15) on magnitude
         # alone, but it's only ONE match for "Mohsin" — must not take over.
-        FacePipelineService._apply_match(track, ("Mohsin", 0.99))
+        FacePipelineService._apply_match(track, ("Mohsin", 0.99), face_seen=True)
         assert track.label == "Ammer"
         assert track.votes["Mohsin"] == pytest.approx(0.99)
         assert track.vote_counts["Mohsin"] == 1
 
     def test_substantially_stronger_match_overrides_and_resets_evidence(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.5))
-        FacePipelineService._apply_match(track, ("Ammer", 0.5))
+        FacePipelineService._apply_match(track, ("Ammer", 0.5), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.5), face_seen=True)
         assert track.label == "Ammer"
 
         # Two corroborating matches, averaging well past similarity (0.5) +
         # override margin (0.15 default) = 0.65+.
-        FacePipelineService._apply_match(track, ("Mohsin", 0.9))
-        FacePipelineService._apply_match(track, ("Mohsin", 0.9))
+        FacePipelineService._apply_match(track, ("Mohsin", 0.9), face_seen=True)
+        FacePipelineService._apply_match(track, ("Mohsin", 0.9), face_seen=True)
         assert track.label == "Mohsin"
         assert track.similarity == pytest.approx(0.9)
         # Evidence reset: the old "Ammer" votes don't linger to make a
@@ -366,31 +368,183 @@ class TestApplyMatch:
 
     def test_repeated_confirmation_raises_the_override_bar(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Ammer", 0.5))
-        FacePipelineService._apply_match(track, ("Ammer", 0.5))
-        FacePipelineService._apply_match(track, ("Ammer", 0.9))
+        FacePipelineService._apply_match(track, ("Ammer", 0.5), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.5), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.9), face_seen=True)
         assert track.label == "Ammer"
         # similarity tracks the running average for the held identity.
         assert track.similarity == pytest.approx((0.5 + 0.5 + 0.9) / 3)
 
         # Two matches that would have cleared the old 0.5-average-based bar
         # (0.65) but not the new, reinforced one (~0.63 + 0.15 = ~0.78).
-        FacePipelineService._apply_match(track, ("Mohsin", 0.7))
-        FacePipelineService._apply_match(track, ("Mohsin", 0.7))
+        FacePipelineService._apply_match(track, ("Mohsin", 0.7), face_seen=True)
+        FacePipelineService._apply_match(track, ("Mohsin", 0.7), face_seen=True)
         assert track.label == "Ammer"
 
     def test_unknown_match_only_counts_the_attempt(self):
         track = self._track()
-        FacePipelineService._apply_match(track, ("Unknown", 0.1))
+        FacePipelineService._apply_match(track, ("Unknown", 0.1), face_seen=True)
         assert track.label == "Unknown"
         assert track.rec_attempts == 1
         assert track.votes == {}
 
     def test_no_match_only_counts_the_attempt(self):
         track = self._track()
-        FacePipelineService._apply_match(track, None)
+        FacePipelineService._apply_match(track, None, face_seen=True)
         assert track.label == "Unknown"
         assert track.rec_attempts == 1
+
+
+class TestIdentityStaleness:
+    """An established identity previously rode along forever once committed
+    — _apply_match only ever cleared it on jumped/revived-track resets, never
+    just because recognition kept finding no face at all (e.g. the person
+    turned their back). identity_override_margin already protects against a
+    single bad-quality attempt corrupting the label; these tests cover the
+    separate consecutive_no_face decay path for the "face durably gone"
+    case, which that margin doesn't touch."""
+
+    @staticmethod
+    def _identified_track():
+        from server.inference.face_pipeline import TrackState
+
+        track = TrackState(track_id=1, bbox=(0, 0, 60, 80), confidence=0.9)
+        FacePipelineService._apply_match(track, ("Ammer", 0.8), face_seen=True)
+        FacePipelineService._apply_match(track, ("Ammer", 0.7), face_seen=True)
+        assert track.label == "Ammer"
+        return track
+
+    def test_decays_to_unknown_after_threshold_consecutive_no_face_attempts(self):
+        track = self._identified_track()
+        for _ in range(settings.identity_stale_after_no_face - 1):
+            FacePipelineService._apply_match(track, None, face_seen=False)
+            assert track.label == "Ammer"  # not yet at the threshold
+
+        FacePipelineService._apply_match(track, None, face_seen=False)
+        assert track.label == "Unknown"
+        assert track.similarity == 0.0
+        assert track.votes == {}
+        assert track.vote_counts == {}
+        # Recognition has still been attempted overall — rec_attempts keeps
+        # counting, unlike a full _reset_identity.
+        assert track.rec_attempts > 0
+
+    def test_face_seen_resets_the_no_face_counter(self):
+        """A face visible but rejected by the quality gate (blur/bad angle)
+        must not count toward staleness the way a durably absent face
+        does — it resets the counter rather than accumulating it."""
+        track = self._identified_track()
+        for _ in range(settings.identity_stale_after_no_face - 1):
+            FacePipelineService._apply_match(track, None, face_seen=False)
+
+        # One more attempt, but this time a face WAS seen (just no match) —
+        # must reset the streak instead of tipping it over the threshold.
+        FacePipelineService._apply_match(track, None, face_seen=True)
+        assert track.label == "Ammer"
+        assert track.consecutive_no_face == 0
+
+        # Now it takes a fresh full run of no-face attempts to decay.
+        for _ in range(settings.identity_stale_after_no_face - 1):
+            FacePipelineService._apply_match(track, None, face_seen=False)
+        assert track.label == "Ammer"
+        FacePipelineService._apply_match(track, None, face_seen=False)
+        assert track.label == "Unknown"
+
+    def test_unidentified_track_is_unaffected_by_no_face_streak(self):
+        """Nothing to decay on a track that never had a name — the counter
+        still increments (harmlessly) but there's no label/votes to clear."""
+        track = self._track()
+        for _ in range(settings.identity_stale_after_no_face + 2):
+            FacePipelineService._apply_match(track, None, face_seen=False)
+        assert track.label == "Unknown"
+
+    @staticmethod
+    def _track():
+        from server.inference.face_pipeline import TrackState
+
+        return TrackState(track_id=2, bbox=(0, 0, 60, 80), confidence=0.9)
+
+
+class TestReidFeatsBatching:
+    """Covers process_batch's appearance-embedding batching added for
+    BoT-SORT tracker fusion (server/inference/bytetrack_adapter.py). Not
+    covered here: whether the embeddings actually change tracker association
+    outcomes (see tests/test_bytetrack_adapter.py's TestReidTracker for the
+    plumbing that proves feats reach the tracked STrack) — this class only
+    covers process_batch wiring the batch call and slicing results back per
+    camera."""
+
+    @patch("server.inference.face_pipeline.FacePipelineService.ensure_loaded", return_value=True)
+    def test_reid_batch_not_called_when_disabled(self, _mock_loaded):
+        service = FacePipelineService()
+        service._loaded = True
+        service._face_app = MagicMock()
+        service._gallery = MagicMock()
+
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        det = RawDetection((10, 20, 60, 120), "person", 0.95)
+        with patch("server.inference.face_pipeline.yolo_runner.run_person_batch", return_value=[[det]]), patch(
+            "server.inference.face_pipeline.yolo_runner.run_reid_batch"
+        ) as mock_reid, patch.object(settings, "track_reid_enabled", False):
+            service.process_batch([(2, frame)], detect_allowed={2: True}, recognition_allowed={2: True})
+
+        mock_reid.assert_not_called()
+
+    @patch("server.inference.face_pipeline.FacePipelineService.ensure_loaded", return_value=True)
+    def test_reid_batch_called_and_feats_threaded_when_enabled(self, _mock_loaded):
+        service = FacePipelineService()
+        service._loaded = True
+        service._face_app = MagicMock()
+        service._gallery = MagicMock()
+
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        det = RawDetection((10, 20, 60, 120), "person", 0.95)
+        fake_embedding = np.array([1.0, 0.0], dtype=np.float32)
+        tracker = service._camera_states[2].tracker
+        with patch("server.inference.face_pipeline.yolo_runner.run_person_batch", return_value=[[det]]), patch(
+            "server.inference.face_pipeline.yolo_runner.run_reid_batch", return_value=[fake_embedding]
+        ) as mock_reid, patch.object(settings, "track_reid_enabled", True), patch.object(
+            tracker, "update_with_detections", wraps=tracker.update_with_detections
+        ) as spy:
+            service.process_batch([(2, frame)], detect_allowed={2: True}, recognition_allowed={2: True})
+
+        mock_reid.assert_called_once()
+        (reid_items,) = mock_reid.call_args.args
+        assert len(reid_items) == 1
+        assert reid_items[0][1] == det.bbox
+
+        spy.assert_called_once()
+        feats = spy.call_args.kwargs["feats"]
+        assert feats is not None
+        assert np.allclose(feats[0], fake_embedding)
+
+    @patch("server.inference.face_pipeline.FacePipelineService.ensure_loaded", return_value=True)
+    def test_degenerate_crop_falls_back_to_zero_vector_not_none_entry(self, _mock_loaded):
+        """A crop run_reid_batch couldn't encode (None) must not break the
+        dense feats array the tracker expects — it's filled with a zero
+        vector (see _feats_for_camera), which BOTrack's own smooth_feature
+        treats as 'no appearance info' rather than poisoning the track."""
+        service = FacePipelineService()
+        service._loaded = True
+        service._face_app = MagicMock()
+        service._gallery = MagicMock()
+
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        det_a = RawDetection((10, 20, 60, 120), "person", 0.95)
+        det_b = RawDetection((70, 20, 120, 120), "person", 0.95)
+        fake_embedding = np.array([0.0, 1.0], dtype=np.float32)
+        tracker = service._camera_states[3].tracker
+        with patch("server.inference.face_pipeline.yolo_runner.run_person_batch", return_value=[[det_a, det_b]]), patch(
+            "server.inference.face_pipeline.yolo_runner.run_reid_batch", return_value=[None, fake_embedding]
+        ), patch.object(settings, "track_reid_enabled", True), patch.object(
+            tracker, "update_with_detections", wraps=tracker.update_with_detections
+        ) as spy:
+            service.process_batch([(3, frame)], detect_allowed={3: True}, recognition_allowed={3: True})
+
+        feats = spy.call_args.kwargs["feats"]
+        assert feats.shape == (2, 2)
+        assert np.allclose(feats[0], [0.0, 0.0])
+        assert np.allclose(feats[1], fake_embedding)
 
 
 class TestResetJumpedTracks:
@@ -416,11 +570,13 @@ class TestResetJumpedTracks:
 
     def test_jumped_identified_track_is_reset(self):
         track = self._track(label="Ammer", jumped=True, rec_attempts=2)
+        track.consecutive_no_face = 3
         FacePipelineService._reset_jumped_tracks([track])
         assert track.label == "Unknown"
         assert track.similarity == 0.0
         assert track.votes == {}
         assert track.vote_counts == {}
+        assert track.consecutive_no_face == 0
 
     def test_jumped_track_that_never_had_a_label_is_left_alone(self):
         # No identity to lose — rec_attempts=0 too, so nothing to reset.

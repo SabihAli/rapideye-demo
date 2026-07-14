@@ -16,7 +16,12 @@ class StreamDecoder:
     forever. There is no FPS throttling; the pipeline consumes the latest
     frame only, so a slow consumer never delays or distorts playback.
 
-    Maintains a 10 s pre-alert RingBuffer and a thread-safe latest-frame slot.
+    Maintains a thread-safe latest-frame slot, plus owns the lifecycle
+    (creation, native-FPS resize) of a ~10 s pre-alert RingBuffer — but does
+    NOT populate that buffer itself. It's filled with *annotated* frames
+    (boxes/labels/zone overlay baked in) by InferencePipeline's main loop,
+    once per processed tick, so alert clips and manual recordings show the
+    same overlays a live viewer would see rather than a clean raw feed.
     """
     def __init__(self, camera_id: int, url: str, base_fps: int = 30):
         self.camera_id = camera_id
@@ -70,7 +75,6 @@ class StreamDecoder:
             self._fps_start_time = now
         with self._frame_lock:
             self._latest_frame = frame
-        self.ring_buffer.append(now, frame)
         self._last_push_time = now
 
     def _run_loop(self):

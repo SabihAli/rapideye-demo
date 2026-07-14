@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from server.config import settings
-from server.inference.ort_models import OrtYoloDetector, nms_xyxy
+from server.inference.ort_models import OrtReidEncoder, OrtYoloDetector, nms_xyxy
 
 
 @dataclass
@@ -71,6 +71,7 @@ class YoloRunner:
         self.person_detector: Optional[OrtYoloDetector] = None
         self.fire_detector: Optional[OrtYoloDetector] = None
         self.weapon_detector: Optional[OrtYoloDetector] = None
+        self.reid_encoder: Optional[OrtReidEncoder] = None
         self.loaded_models_names: List[str] = []
         self._load_models()
 
@@ -112,6 +113,15 @@ class YoloRunner:
             self.loaded_models_names.append(f"Weapon ORT ({self.weapon_detector.active_provider})")
         except Exception as exc:
             print(f"[YoloRunner] Failed to load weapon detector: {exc}")
+
+        if settings.track_reid_enabled:
+            try:
+                reid_path = settings.onnx_dir / settings.model_reid
+                self.reid_encoder = OrtReidEncoder(reid_path, name="reid")
+                self.reid_encoder.warmup()
+                self.loaded_models_names.append(f"ReID ORT ({self.reid_encoder.active_provider})")
+            except Exception as exc:
+                print(f"[YoloRunner] Failed to load ReID encoder: {exc}")
 
     def _load_detector_with_fallback(
         self,
@@ -241,6 +251,40 @@ class YoloRunner:
         for local_i, frame_i in enumerate(active_idx):
             outputs[frame_i] = self._decode_array(arrays[local_i], detector)
         return outputs
+
+    def run_reid_batch(
+        self,
+        items: List[Tuple[np.ndarray, Tuple[float, float, float, float]]],
+    ) -> List[Optional[np.ndarray]]:
+        """Batched appearance-embedding extraction for BoT-SORT tracker
+        association — ``items`` are (frame, bbox) pairs in the same
+        (frame, bbox) shape as face_recognition.recognize_persons_batch,
+        one embedding per item in the same order (or None for a crop too
+        degenerate to encode). Feeds ByteTrackAdapter.update_with_detections's
+        ``feats=`` directly; never matched against a gallery or exposed
+        outside the tracker layer."""
+        results: List[Optional[np.ndarray]] = [None] * len(items)
+        if not items or self.reid_encoder is None:
+            return results
+
+        crops: List[np.ndarray] = []
+        index_map: List[int] = []
+        for i, (frame, bbox) in enumerate(items):
+            x1, y1, x2, y2 = (int(v) for v in bbox)
+            if x2 - x1 < 2 or y2 - y1 < 2:
+                continue
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            crops.append(crop)
+            index_map.append(i)
+
+        if not crops:
+            return results
+        embeddings = self.reid_encoder.encode(crops)
+        for j, orig_i in enumerate(index_map):
+            results[orig_i] = embeddings[j]
+        return results
 
     def run_weapon_batch_on_crops(
         self,
