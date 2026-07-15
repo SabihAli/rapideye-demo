@@ -60,6 +60,8 @@ venv: check-python
 	$(PYTHON) -m venv .venv
 	@echo Virtual environment created at .venv using $(PYTHON)
 
+# InsightFace pulls plain `onnxruntime` which overwrites onnxruntime-gpu.
+# After the lock install we uninstall the CPU package and force-reinstall GPU.
 install: check-python env
 ifeq ($(OS),Windows_NT)
 	@if not exist $(VENV_PY) $(PYTHON) -m venv .venv
@@ -67,20 +69,19 @@ else
 	@test -f $(VENV_PY) || $(PYTHON) -m venv .venv
 endif
 	@$(VENV_PY) -c "import sys; v=sys.version_info; assert v>=(3,11), f'.venv uses Python {sys.version} — run make clean then make install PYTHON=py -3.13'"
-	$(VENV_PY) -m pip install -U pip setuptools wheel
+	$(VENV_PY) -m pip install -U "pip" "setuptools==81.0.0" "wheel"
 	$(VENV_PY) -m pip install -r requirements-lock.txt
-	# InsightFace declares a hard dependency on plain `onnxruntime`, which
-	# shares onnxruntime-gpu's import namespace and silently overwrites its
-	# files — the lock file alone can't prevent this (pip resolves both
-	# requirements independently and installs both). Remove the CPU package
-	# and force-reinstall the GPU one last so it owns the import path.
 	-$(VENV_PY) -m pip uninstall -y onnxruntime
 	$(VENV_PY) -m pip install --force-reinstall --no-deps onnxruntime-gpu==1.24.4 tensorrt-cu12==10.13.3.9
 	$(VENV_PY) -m pip install -e ".[dev]" --no-deps
 	@echo "Backend dependencies installed (requirements-lock.txt + editable vision-demo)"
 
 install-web:
+ifeq ($(OS),Windows_NT)
+	cd web && $(NPM_CMD) ci
+else
 	cd web && $(NODE_ENV_PREFIX) $(NPM_CMD) ci
+endif
 	@echo Frontend dependencies installed (npm ci — exact package-lock.json versions)
 
 freeze: env
@@ -101,7 +102,11 @@ endif
 
 frontend:
 	@$(NODE_BIN) -e "const v=process.versions.node.split('.').map(Number); const ok=(v[0]>22)|| (v[0]===22&&v[1]>=12) || (v[0]===20&&v[1]>=19); if(!ok){console.error('Frontend requires Node 20.19+ or 22.12+. Current: '+process.versions.node); process.exit(1)}"
+ifeq ($(OS),Windows_NT)
+	cd web && set CHOKIDAR_USEPOLLING=1&& set CHOKIDAR_INTERVAL=300&& $(NPM_CMD) run dev
+else
 	cd web && CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=300 $(NODE_ENV_PREFIX) $(NPM_CMD) run dev
+endif
 
 dev:
 	@echo Run in two terminals:
