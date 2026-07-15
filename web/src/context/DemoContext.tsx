@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { getAlerts, getHealth } from '@/lib/api'
 import { useStreamSocket } from '@/hooks/useStreamSocket'
+import { useCameras } from '@/context/CameraContext'
 import type { AlertEvent, StreamFrame, SystemHealth } from '@/types/api'
 
 interface DemoContextValue {
@@ -22,21 +23,23 @@ interface DemoContextValue {
 
 const DemoContext = createContext<DemoContextValue | null>(null)
 
-function useCameraStream(numId: number) {
-  return useStreamSocket(numId)
+function useCameraStream(numId: number, enabled: boolean) {
+  return useStreamSocket(numId, enabled)
 }
 
 function DemoStreamsProvider({
   children,
+  registeredIds,
   onStreamsChange,
 }: {
   children: ReactNode
+  registeredIds: Set<number>
   onStreamsChange: (streams: Map<string, StreamFrame | null>, connected: Map<string, boolean>) => void
 }) {
-  const s1 = useCameraStream(1)
-  const s2 = useCameraStream(2)
-  const s3 = useCameraStream(3)
-  const s4 = useCameraStream(4)
+  const s1 = useCameraStream(1, registeredIds.has(1))
+  const s2 = useCameraStream(2, registeredIds.has(2))
+  const s3 = useCameraStream(3, registeredIds.has(3))
+  const s4 = useCameraStream(4, registeredIds.has(4))
 
   useEffect(() => {
     const streams = new Map<string, StreamFrame | null>([
@@ -58,11 +61,14 @@ function DemoStreamsProvider({
 }
 
 export function DemoProvider({ children }: { children: ReactNode }) {
+  const { cameras } = useCameras()
   const [health, setHealth] = useState<SystemHealth | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
   const [alerts, setAlerts] = useState<AlertEvent[]>([])
   const [streams, setStreams] = useState<Map<string, StreamFrame | null>>(new Map())
   const [connected, setConnected] = useState<Map<string, boolean>>(new Map())
+
+  const registeredIds = useMemo(() => new Set(cameras.map((c) => c.camera_id)), [cameras])
 
   const onStreamsChange = useCallback(
     (nextStreams: Map<string, StreamFrame | null>, nextConnected: Map<string, boolean>) => {
@@ -116,7 +122,9 @@ export function DemoProvider({ children }: { children: ReactNode }) {
 
   return (
     <DemoContext.Provider value={value}>
-      <DemoStreamsProvider onStreamsChange={onStreamsChange}>{children}</DemoStreamsProvider>
+      <DemoStreamsProvider registeredIds={registeredIds} onStreamsChange={onStreamsChange}>
+        {children}
+      </DemoStreamsProvider>
     </DemoContext.Provider>
   )
 }

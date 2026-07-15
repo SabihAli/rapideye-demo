@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { VideoModal } from '@/components/ui/VideoModal'
 import { getAllCameraRecordings, recordingUrl } from '@/lib/api'
-import { CAMERAS, cameraFromNumId } from '@/lib/cameras'
+import { cameraFromNumId } from '@/lib/cameras'
+import { useCameras } from '@/context/CameraContext'
 import { formatTimestamp } from '@/context/DemoContext'
 import type { CameraRecording } from '@/types/api'
 
@@ -24,6 +25,7 @@ function formatFileSize(bytes?: number | null): string {
 }
 
 export function RecordingsPage() {
+  const { cameras } = useCameras()
   const [recordings, setRecordings] = useState<CameraRecording[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -52,7 +54,7 @@ export function RecordingsPage() {
         <div>
           <h1 className="text-xl font-bold text-text">Camera Recordings</h1>
           <p className="text-sm text-muted">
-            Saved MP4 recordings from {CAMERAS.length} camera feeds
+            Saved MP4 recordings from {cameras.length} camera feed{cameras.length === 1 ? '' : 's'}
           </p>
         </div>
         <Button onClick={() => void loadRecordings()} disabled={loading} variant="outline">

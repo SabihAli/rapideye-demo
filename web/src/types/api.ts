@@ -70,3 +70,15 @@ export interface CameraModelSwitches {
   weapon_enabled: boolean
   face_enabled: boolean
 }
+
+export interface CameraOut {
+  camera_id: number
+  name: string
+  source_type: 'url' | 'file'
+  source_value: string
+  original_filename?: string | null
+  created_at: number
+  is_active: boolean
+  current_fps: number
+  error_count: number
+}
