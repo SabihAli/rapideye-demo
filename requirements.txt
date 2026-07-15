@@ -1,7 +1,15 @@
 # =============================================================================
 # requirements.txt — server/inference/face_recognition.py
 #
-# Pinned GPU stack. Requires Python 3.11+ (tested on 3.13, Linux x86_64, RTX 3090).
+# Curated, commented list of DIRECT dependencies — read this to understand
+# *why* something is pinned. `make install` does not install from this file
+# directly; it installs from requirements-lock.txt (a full pip-freeze
+# snapshot of this exact set, direct + transitive, proven working). If you
+# add/remove/change a dependency here, regenerate the lock afterward with
+# `make freeze` and commit both files together.
+#
+# Pinned GPU stack. Requires Python 3.11+ (proven on 3.13.11, Linux x86_64,
+# NVIDIA RTX 3090, driver 580.159.03).
 #
 # Install (recommended):
 #   make install
@@ -16,16 +24,34 @@
 #
 # NVIDIA CUDA/cuDNN/NCCL runtime libraries are pulled in automatically as wheels
 # by torch and onnxruntime-gpu — no system CUDA toolkit install is required.
+#
+# ⚠️ onnxruntime / onnxruntime-gpu share the same import namespace (`onnxruntime`)
+#   and silently overwrite each other's files if both get installed. insightface
+#   declares a hard dependency on plain `onnxruntime`, so a naive `pip install`
+#   of this file WILL pull the CPU-only package back in after onnxruntime-gpu is
+#   installed, and whichever installs last wins (all inference silently falls
+#   back to CPUExecutionProvider with no error). `make install` handles this by
+#   uninstalling `onnxruntime` and force-reinstalling `onnxruntime-gpu` last —
+#   don't `pip install -r requirements-lock.txt` on its own and expect the GPU
+#   build to stick; use `make install`.
+#
+# --- System prerequisites (not pip-installable, verify separately) ----------
+#   ffmpeg 6.1.1+ with NVDEC/cuvid decoders (h264_cuvid, hevc_cuvid, ...) —
+#     check via `ffmpeg -decoders | grep cuvid`
+#   NVIDIA driver 580.159.03+ (CUDA 13.0 driver API; wheels below target the
+#     CUDA 12.6 runtime, which that driver version supports)
+#   Node.js — see web/.nvmrc / web/package.json "engines" for the pinned
+#     frontend toolchain version
 # =============================================================================
 
 --extra-index-url https://download.pytorch.org/whl/cu126
 
 # --- Core (direct imports: cv2, numpy) --------------------------------------
 numpy==2.4.4
-pandas>=2.2.0
-seaborn>=0.13.0
-gitpython>=3.1.30
-scipy>=1.14.0
+pandas==3.0.3
+seaborn==0.13.2
+gitpython==3.1.51
+scipy==1.18.0
 opencv-python==5.0.0.93          # GUI build — required for --show live window.
                                  # For headless/file-output only, swap to:
                                  #   opencv-python-headless==5.0.0.93
@@ -53,15 +79,20 @@ torchvision==0.27.1+cu126
 #   InsightFace: buffalo_l pack     -> insightface fetches to ~/.insightface/models
 
 # --- FastAPI demo server -----------------------------------------------------
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-pydantic-settings>=2.6.0
-python-dotenv>=1.0.0
-python-multipart>=0.0.9          # required by FastAPI to parse multipart/form-data (camera add: Form + UploadFile)
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+python-multipart==0.0.32         # required by FastAPI to parse multipart/form-data (camera add: Form + UploadFile)
 
 # --- Dev / test --------------------------------------------------------------
-pytest>=8.0.0
-httpx>=0.27.0
+pytest==9.1.1
+httpx==0.28.1
 
 # --- Optional GPU telemetry (face_recognition --log-gpu) ---------------------
-pynvml>=11.5.0
+# NVIDIA reclaimed the `pynvml` PyPI name as an official thin wrapper around
+# nvidia-ml-py (the actual bindings, pulled in transitively — also a direct
+# dependency of ultralytics). torch's own FutureWarning about pynvml being
+# "deprecated" is a blanket check that doesn't know about this and fires
+# either way; safe to ignore.
+pynvml==13.0.1

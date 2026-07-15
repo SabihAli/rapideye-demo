@@ -211,6 +211,14 @@ class Settings(BaseSettings):
 
     # Ingestion: NVDEC (GPU) decode via ffmpeg, CPU OpenCV fallback.
     nvdec_enable: bool = True
+    # Max time to wait for a network stream (RTSP/HTTP camera URL) to
+    # connect and start producing data before treating the attempt as
+    # failed. Applied as ffmpeg/ffprobe's own -rw_timeout (so a dead/
+    # unreachable source gives up on its own instead of relying solely on
+    # StreamDecoder.stop()'s bounded join(), which can't interrupt a blocked
+    # read/connect call from another thread) and as OpenCV's open/read
+    # timeout props for the CPU fallback path.
+    stream_connect_timeout_sec: float = 10.0
 
     base_fps: int = 30
     api_host: str = "0.0.0.0"

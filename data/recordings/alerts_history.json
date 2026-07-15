@@ -358,5 +358,145 @@
         ],
         "clip_path": "/api/recordings/e746790c-3f57-4103-9fa0-c038fadffc8e",
         "clip_ready": true
+    },
+    {
+        "id": "31be81a9-c5bb-4d04-9cdf-1a7eacf03c02",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106682.4823813,
+        "detections": [
+            {
+                "bbox": [
+                    0.4722222222222222,
+                    0.0,
+                    0.7148148148148148,
+                    0.09427083333333333
+                ],
+                "class_name": "smoke",
+                "confidence": 0.45688962936401367
+            }
+        ],
+        "clip_path": "/api/recordings/31be81a9-c5bb-4d04-9cdf-1a7eacf03c02",
+        "clip_ready": true
+    },
+    {
+        "id": "0bf239a7-0caa-468f-a104-10fbf6f3bd39",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106684.9725142,
+        "detections": [
+            {
+                "bbox": [
+                    0.5018518518518519,
+                    0.0,
+                    0.9083333333333333,
+                    0.109375
+                ],
+                "class_name": "smoke",
+                "confidence": 0.5189380645751953
+            }
+        ],
+        "clip_path": null,
+        "clip_ready": false
+    },
+    {
+        "id": "8e5a27d9-b16b-46b2-a89a-6de5b8472c91",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106691.6008284,
+        "detections": [
+            {
+                "bbox": [
+                    0.5101851851851852,
+                    0.0,
+                    0.7666666666666667,
+                    0.1171875
+                ],
+                "class_name": "smoke",
+                "confidence": 0.6293191909790039
+            }
+        ],
+        "clip_path": null,
+        "clip_ready": false
+    },
+    {
+        "id": "ee283942-ed87-4986-8a54-6d036b0b79ba",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106695.4038649,
+        "detections": [
+            {
+                "bbox": [
+                    0.5111111111111111,
+                    0.0,
+                    0.9,
+                    0.10989583333333333
+                ],
+                "class_name": "smoke",
+                "confidence": 0.5189380645751953
+            }
+        ],
+        "clip_path": null,
+        "clip_ready": false
+    },
+    {
+        "id": "b22ee78a-5569-4d07-bd91-4b05b43aa9af",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106702.1050081,
+        "detections": [
+            {
+                "bbox": [
+                    0.5,
+                    0.0,
+                    0.7351851851851852,
+                    0.11770833333333333
+                ],
+                "class_name": "smoke",
+                "confidence": 0.5932745933532715
+            }
+        ],
+        "clip_path": "/api/recordings/b22ee78a-5569-4d07-bd91-4b05b43aa9af",
+        "clip_ready": true
+    },
+    {
+        "id": "0c1afd63-6810-4bb9-808d-6e8bc62d008e",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106705.8157432,
+        "detections": [
+            {
+                "bbox": [
+                    0.5222222222222223,
+                    0.0,
+                    0.899074074074074,
+                    0.103125
+                ],
+                "class_name": "smoke",
+                "confidence": 0.5363225936889648
+            }
+        ],
+        "clip_path": null,
+        "clip_ready": false
+    },
+    {
+        "id": "f05caf96-0bbb-4b4b-afd4-117e6e1be2fb",
+        "camera_id": 1,
+        "alert_type": "fire.detected",
+        "timestamp": 1784106710.410383,
+        "detections": [
+            {
+                "bbox": [
+                    0.649074074074074,
+                    0.0,
+                    0.8694444444444445,
+                    0.14947916666666666
+                ],
+                "class_name": "smoke",
+                "confidence": 0.5197019577026367
+            }
+        ],
+        "clip_path": null,
+        "clip_ready": false
     }
 ]

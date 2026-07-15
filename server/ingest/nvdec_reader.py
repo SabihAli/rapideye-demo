@@ -15,9 +15,19 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import threading
 from typing import Optional
 
 import numpy as np
+
+from server.config import settings
+
+_NETWORK_PREFIXES = ("rtsp://", "http://", "https://")
+
+
+def _is_network_url(url: str) -> bool:
+    return url.lower().startswith(_NETWORK_PREFIXES)
+
 
 _CUVID_DECODERS = {
     "h264": "h264_cuvid",
@@ -35,21 +45,80 @@ class NvdecUnavailable(RuntimeError):
     pass
 
 
-def probe(url: str) -> dict:
-    """Return {width, height, fps, codec} for the first video stream."""
+class ProcRegistry:
+    """Thread-safe single-slot handle for whichever ffprobe/ffmpeg subprocess
+    is currently in flight for one decode attempt (probing, then decoding).
+
+    A dead/unreachable network source can leave probe() or NvdecFrameReader
+    blocked in a subprocess read for a long time (bounded by -timeout when
+    ffmpeg supports it, unbounded for protocols that don't — see probe()).
+    StreamDecoder owns one of these per decoder and calls kill() from
+    stop() (a different thread than the one blocked in the read), which is
+    the only thing that can actually interrupt that wait immediately rather
+    than waiting for ffmpeg's own timeout — same registry across the probe
+    and decode phases so stop() has something to kill regardless of which
+    phase is currently blocked.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: Optional[subprocess.Popen] = None
+
+    def set(self, proc: Optional[subprocess.Popen]) -> None:
+        with self._lock:
+            self._proc = proc
+
+    def kill(self) -> None:
+        with self._lock:
+            proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+def probe(url: str, registry: Optional[ProcRegistry] = None) -> dict:
+    """Return {width, height, fps, codec} for the first video stream.
+
+    Runs ffprobe via Popen (not subprocess.run) so the in-flight process can
+    be registered with `registry` — letting StreamDecoder.stop() kill it
+    immediately from another thread instead of only via the timeout below.
+    """
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
         raise NvdecUnavailable("ffprobe not found")
-    cmd = [
-        ffprobe, "-v", "error",
+    cmd = [ffprobe, "-v", "error"]
+    if _is_network_url(url):
+        # -timeout is the rtsp demuxer's and tcp protocol's own socket I/O
+        # timeout (microseconds) — both default to 0/-1 (infinite) otherwise.
+        # It has no effect on plain http/https (this ffmpeg build exposes no
+        # equivalent option for those; verified via `ffmpeg -h protocol=http`)
+        # — for those, registry-based cancellation and the timeout= below
+        # are what actually bound a hung probe.
+        cmd += ["-timeout", str(int(settings.stream_connect_timeout_sec * 1_000_000))]
+    cmd += [
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height,codec_name,avg_frame_rate,r_frame_rate",
         "-of", "json", url,
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    if out.returncode != 0:
-        raise NvdecUnavailable(f"ffprobe failed: {out.stderr.strip()[:200]}")
-    streams = json.loads(out.stdout).get("streams") or []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if registry is not None:
+        registry.set(proc)
+    try:
+        stdout, stderr = proc.communicate(timeout=settings.stream_connect_timeout_sec + 2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise NvdecUnavailable(f"ffprobe timed out connecting to {url}")
+    finally:
+        if registry is not None:
+            registry.set(None)
+
+    if proc.returncode != 0:
+        raise NvdecUnavailable(f"ffprobe failed: {stderr.strip()[:200]}")
+    streams = json.loads(stdout).get("streams") or []
     if not streams:
         raise NvdecUnavailable("no video stream found")
     s = streams[0]
@@ -73,12 +142,12 @@ def probe(url: str) -> dict:
 class NvdecFrameReader:
     """Blocking frame reader over an ffmpeg NVDEC subprocess."""
 
-    def __init__(self, url: str, is_file: bool, loop: bool = True):
+    def __init__(self, url: str, is_file: bool, loop: bool = True, registry: Optional[ProcRegistry] = None):
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise NvdecUnavailable("ffmpeg not found")
 
-        info = probe(url)
+        info = probe(url, registry=registry)
         self.width: int = info["width"]
         self.height: int = info["height"]
         self.fps: float = info["fps"]
@@ -94,8 +163,16 @@ class NvdecFrameReader:
             if loop:
                 cmd += ["-stream_loop", "-1"]
             cmd += ["-re"]
-        elif url.startswith("rtsp"):
-            cmd += ["-rtsp_transport", "tcp"]
+        else:
+            # Bounds how long ffmpeg will sit blocked on a dead/unreachable
+            # or stalled network source. Only takes effect for rtsp/tcp (no
+            # equivalent option exists for http/https in this ffmpeg build —
+            # see probe() above); the registry handle below is what actually
+            # guarantees a hung connection can't outlive stop() regardless
+            # of protocol.
+            cmd += ["-timeout", str(int(settings.stream_connect_timeout_sec * 1_000_000))]
+            if url.startswith("rtsp"):
+                cmd += ["-rtsp_transport", "tcp"]
         cmd += ["-i", url, "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
 
         self._proc = subprocess.Popen(
@@ -104,6 +181,9 @@ class NvdecFrameReader:
             stderr=subprocess.PIPE,
             bufsize=self._frame_bytes * 4,
         )
+        self._registry = registry
+        if registry is not None:
+            registry.set(self._proc)
         # Fail fast if NVDEC init dies immediately (e.g. unsupported codec).
         first = self._read_exact(self._frame_bytes)
         if first is None:
@@ -155,3 +235,5 @@ class NvdecFrameReader:
                     pipe.close()
                 except Exception:
                     pass
+        if self._registry is not None:
+            self._registry.set(None)
