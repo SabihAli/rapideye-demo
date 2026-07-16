@@ -224,8 +224,17 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8001
 
-    # Paths resolved dynamically
-    project_root: Path = Path(__file__).resolve().parent.parent
+    # Paths resolved dynamically (supporting both dev environment and PyInstaller _MEIPASS bundle)
+    @staticmethod
+    def _get_project_root() -> Path:
+        import sys as _sys
+        if hasattr(_sys, '_MEIPASS'):
+            return Path(_sys._MEIPASS)
+        elif getattr(_sys, 'frozen', False):
+            return Path(_sys.executable).resolve().parent
+        return Path(__file__).resolve().parent.parent
+
+    project_root: Path = _get_project_root()
     data_dir: Path = project_root / "data"
     assets_dir: Path = project_root / "assets"
     zones_dir: Path = project_root / "data" / "zones"
@@ -235,7 +244,7 @@ class Settings(BaseSettings):
     videos_uploads_dir: Path = project_root / "data" / "videos" / "uploads"
 
     model_config = SettingsConfigDict(
-        env_file=str(Path(__file__).resolve().parent.parent / ".env"),
+        env_file=str(_get_project_root() / ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
