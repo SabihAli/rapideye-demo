@@ -19,7 +19,28 @@ def _new_tracker() -> ByteTrackAdapter:
         new_track_thresh=settings.track_new_thresh,
         match_thresh=settings.track_match_thresh,
         jump_iou_threshold=settings.track_jump_iou_threshold,
+        use_reid=settings.track_reid_enabled,
+        proximity_thresh=settings.track_proximity_thresh,
+        appearance_thresh=settings.track_appearance_thresh,
     )
+
+
+def _feats_for_camera(reid_results: List[Optional[np.ndarray]]) -> Optional[np.ndarray]:
+    """Assemble one camera's slice of run_reid_batch's flat results into the
+    dense array ByteTrackAdapter.update_with_detections expects, or None if
+    every crop in this cycle was too degenerate to encode (falls back to
+    plain IOU/motion association for this cycle only, same as the flag being
+    off). A per-detection None (rather than the whole camera) becomes a zero
+    vector: BOTrack.update_features/smooth_feature already treats a zero-norm
+    feature as "no appearance info" and leaves the track's smoothed feature
+    unchanged, so a degenerate crop degrades gracefully instead of poisoning
+    the track's embedding."""
+    if not reid_results or all(r is None for r in reid_results):
+        return None
+    dim = next(r.shape[0] for r in reid_results if r is not None)
+    return np.stack(
+        [r if r is not None else np.zeros(dim, dtype=np.float32) for r in reid_results]
+    ).astype(np.float32)
 
 
 @dataclass
@@ -122,6 +143,18 @@ class FacePipelineService:
     def rec_interval_effective(self) -> int:
         return max(1, self._rec_interval_effective)
 
+    def _rec_interval_for(self, track: TrackState) -> int:
+        # An unconfirmed track (never labeled, or just wiped by a jump/revival
+        # reset) has no established identity for a bad embedding to corrupt,
+        # so it doesn't need the conservative steady-state cadence — use the
+        # short probation interval so it can reach identity_min_matches
+        # quickly instead of waiting out the full facial_rec_interval between
+        # each of the matches it needs. Once it has a label, fall back to the
+        # normal (adaptive) cadence.
+        if track.label == "Unknown":
+            return max(1, settings.facial_rec_interval_probation)
+        return self.rec_interval_effective
+
     @property
     def fire_interval_effective(self) -> int:
         return max(1, self._fire_interval_effective)
@@ -160,8 +193,27 @@ class FacePipelineService:
         return settings.person_interval_min + int(round(span * ratio))
 
     @staticmethod
-    def _apply_match(track: TrackState, match: Tuple[str, float] | None) -> None:
+    def _apply_match(track: TrackState, match: Tuple[str, float] | None, face_seen: bool) -> None:
         track.rec_attempts += 1
+
+        if not face_seen:
+            # No face detected in the crop at all this attempt (as opposed
+            # to a face that was detected but rejected by the quality gate —
+            # see face_recognition._face_embedding_from_person_crop) — a
+            # sign the person may no longer be facing the camera (e.g. back
+            # turned). identity_override_margin already protects an
+            # established identity from a single bad-quality attempt; this
+            # protects against it riding along forever once the face is
+            # durably gone, which that mechanism doesn't cover at all.
+            track.consecutive_no_face += 1
+            if track.label != "Unknown" and track.consecutive_no_face >= settings.identity_stale_after_no_face:
+                track.label = "Unknown"
+                track.similarity = 0.0
+                track.votes.clear()
+                track.vote_counts.clear()
+            return
+        track.consecutive_no_face = 0
+
         if match is None:
             return
         name, sim = match
@@ -246,14 +298,40 @@ class FacePipelineService:
         rec_candidates: List[Tuple[np.ndarray, Tuple[int, int, int, int]]] = []
         rec_tracks: List[TrackState] = []
 
+        # Appearance embeddings feed the tracker's own association step (see
+        # ByteTrackAdapter.update_with_detections's feats= param), so unlike
+        # facial recognition's per-track cadence below, these have to be
+        # computed for every current-frame detection up front, before
+        # update_with_detections runs — not throttled independently, only
+        # bounded by however often person detection itself runs (detect_mask).
+        reid_feats_by_idx: List[Optional[np.ndarray]] = [None] * len(items)
+        if settings.track_reid_enabled:
+            reid_items: List[Tuple[np.ndarray, Tuple[float, float, float, float]]] = []
+            reid_spans: List[Tuple[int, int]] = []
+            for idx, frame in enumerate(frames):
+                if not detect_mask[idx]:
+                    continue
+                dets = detections_batch[idx]
+                reid_spans.append((idx, len(dets)))
+                reid_items.extend((frame, det.bbox) for det in dets)
+            if reid_items:
+                flat_results = yolo_runner.run_reid_batch(reid_items)
+                pos = 0
+                for idx, count in reid_spans:
+                    reid_feats_by_idx[idx] = _feats_for_camera(flat_results[pos : pos + count])
+                    pos += count
+
         for idx, (camera_id, frame) in enumerate(items):
             state = self._camera_states[camera_id]
             tracker = state.tracker
             rec_allowed = True if recognition_allowed is None else recognition_allowed.get(camera_id, False)
 
             if detect_mask[idx]:
-                active_tracks, _ = tracker.update_with_detections(detections_batch[idx], frame.shape)
+                active_tracks, new_candidates = tracker.update_with_detections(
+                    detections_batch[idx], frame.shape, feats=reid_feats_by_idx[idx]
+                )
                 state.next_detect_frame = state.frame_index + self._dynamic_interval(tracker.mean_confidence())
+                self._reset_revived_tracks(new_candidates)
             else:
                 active_tracks = tracker.predict_only(frame.shape)
 
@@ -291,9 +369,23 @@ class FacePipelineService:
                     and rec_allowed
                     and self._should_attempt_recognition(track, state.frame_index, settings.min_person_box)
                 ):
-                    track.next_rec_frame = state.frame_index + self.rec_interval_effective
+                    track.next_rec_frame = state.frame_index + self._rec_interval_for(track)
                     rec_candidates.append((frame, bbox))
                     rec_tracks.append(track)
+
+        # active_tracks() rebuilds a TrackState per tracked STrack (clip_bbox,
+        # jump-IOU check, etc.) on every call — compute it exactly once per
+        # camera per tick and reuse below, rather than recomputing it fresh
+        # per detection (identity refresh) and again for dedupe. The
+        # TrackState objects themselves are the same persistent, mutated-in-
+        # place instances active_tracks() always returns (see
+        # ByteTrackAdapter._to_state's self._meta cache), so this is a pure
+        # efficiency fix — _apply_match's mutations below are visible
+        # through this same dict, not shadowed by it.
+        tracks_by_camera: Dict[int, Dict[int, TrackState]] = {
+            camera_id: {t.track_id: t for t in self._camera_states[camera_id].tracker.active_tracks()}
+            for camera_id in camera_ids
+        }
 
         if rec_candidates and self._recognize_persons_batch is not None:
             matches = self._recognize_persons_batch(
@@ -303,19 +395,13 @@ class FacePipelineService:
                 min_det_score=settings.face_min_det_score,
                 min_face_px=settings.face_min_size_px,
             )
-            for track, match in zip(rec_tracks, matches):
-                self._apply_match(track, match)
+            for track, (match, face_seen) in zip(rec_tracks, matches):
+                self._apply_match(track, match, face_seen)
 
             for camera_id, detections in out.items():
+                tracks_by_id = tracks_by_camera[camera_id]
                 for det in detections:
-                    track = next(
-                        (
-                            track
-                            for track in self._camera_states[camera_id].tracker.active_tracks()
-                            if track.track_id == det.track_id
-                        ),
-                        None,
-                    )
+                    track = tracks_by_id.get(det.track_id)
                     # Only tracks recognition has actually run on get an
                     # identity — otherwise this would stamp "Unknown" back
                     # onto every other track in the camera regardless of the
@@ -332,10 +418,7 @@ class FacePipelineService:
         # duplicate from an earlier mismatch can otherwise sit in `out`
         # unresolved on coasting frames.
         for camera_id, detections in out.items():
-            tracks_by_id = {
-                t.track_id: t for t in self._camera_states[camera_id].tracker.active_tracks()
-            }
-            self._dedupe_identities(detections, tracks_by_id)
+            self._dedupe_identities(detections, tracks_by_camera[camera_id])
 
         return out
 
@@ -377,6 +460,26 @@ class FacePipelineService:
             if track.jumped and (track.rec_attempts or track.label != "Unknown"):
                 cls._reset_identity(track)
 
+    @classmethod
+    def _reset_revived_tracks(cls, tracks: List[TrackState]) -> None:
+        """``tracks`` just (re)entered the tracker's tracked+activated set this
+        update() call — ByteTrackAdapter.update_with_detections's second
+        return value covers both a genuinely brand-new track_id (harmless,
+        already defaults to Unknown) and a track_id ByteTrack revived from its
+        lost_stracks buffer after being invisible for up to track_buffer
+        frames. The latter is matched purely on IOU/motion, no appearance
+        model (see ByteTrackAdapter's docstring) — a different physical
+        person can walk into a spot ByteTrack still associates with an old
+        track_id, inheriting whatever identity/votes were left on it despite
+        zero recognition attempts having run on them. _reset_jumped_tracks
+        doesn't catch this case: that flag compares bbox IOU against the
+        track's last known position, which a lost-track revival can satisfy
+        easily. Reset unconditionally here so a name only reattaches once
+        recognition actually runs against whoever holds the track_id now."""
+        for track in tracks:
+            if track.rec_attempts or track.label != "Unknown":
+                cls._reset_identity(track)
+
     @staticmethod
     def _reset_identity(track: TrackState) -> None:
         track.label = "Unknown"
@@ -385,6 +488,7 @@ class FacePipelineService:
         track.votes.clear()
         track.vote_counts.clear()
         track.next_rec_frame = 0
+        track.consecutive_no_face = 0
 
 
 face_pipeline_service = FacePipelineService()

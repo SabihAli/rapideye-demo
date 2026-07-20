@@ -3,8 +3,9 @@ import cv2
 import threading
 from typing import Optional, Any
 from pathlib import Path
+from server.config import settings
 from server.ingest.ring_buffer import RingBuffer
-from server.ingest.nvdec_reader import NvdecFrameReader, NvdecUnavailable
+from server.ingest.nvdec_reader import NvdecFrameReader, NvdecUnavailable, ProcRegistry
 
 class StreamDecoder:
     """
@@ -16,7 +17,12 @@ class StreamDecoder:
     forever. There is no FPS throttling; the pipeline consumes the latest
     frame only, so a slow consumer never delays or distorts playback.
 
-    Maintains a 10 s pre-alert RingBuffer and a thread-safe latest-frame slot.
+    Maintains a thread-safe latest-frame slot, plus owns the lifecycle
+    (creation, native-FPS resize) of a ~10 s pre-alert RingBuffer — but does
+    NOT populate that buffer itself. It's filled with *annotated* frames
+    (boxes/labels/zone overlay baked in) by InferencePipeline's main loop,
+    once per processed tick, so alert clips and manual recordings show the
+    same overlays a live viewer would see rather than a clean raw feed.
     """
     def __init__(self, camera_id: int, url: str, base_fps: int = 30):
         self.camera_id = camera_id
@@ -40,6 +46,14 @@ class StreamDecoder:
         # Lock for accessing latest frame
         self._frame_lock = threading.Lock()
 
+        # The decode loop can be blocked inside a call (probing, reader.read(),
+        # cv2.VideoCapture open/read) that self._running alone can't
+        # interrupt — that flag is only checked *between* calls. stop() uses
+        # this registry to kill whichever ffprobe/ffmpeg subprocess is
+        # currently in flight directly from another thread, which is what
+        # actually unblocks a stuck connect/read — see ProcRegistry.
+        self._proc_registry = ProcRegistry()
+
     def start(self):
         """Starts the background decoder thread."""
         if self._running:
@@ -49,11 +63,24 @@ class StreamDecoder:
         self._thread.start()
 
     def stop(self):
-        """Stops the background decoder thread."""
+        """Stops the background decoder thread. Forcibly kills any in-flight
+        NVDEC subprocess first — self._running alone can't interrupt a
+        thread blocked inside a read/connect call, and leaving that
+        subprocess running is how a dead/unreachable camera source ends up
+        an orphaned ffmpeg process that outlives the whole backend."""
         self._running = False
+        self._proc_registry.kill()
         if self._thread:
             self._thread.join(timeout=4.0)
         self.is_active = False
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """time.sleep() that gives up early once stop() flips _running off,
+        instead of leaving a retry-backoff sleep as the one thing standing
+        between a stop() call and the thread actually exiting."""
+        deadline = time.time() + seconds
+        while self._running and time.time() < deadline:
+            time.sleep(min(0.2, deadline - time.time()))
 
     def get_latest_frame(self) -> Optional[Any]:
         """Thread-safe retrieval of the latest frame."""
@@ -70,14 +97,12 @@ class StreamDecoder:
             self._fps_start_time = now
         with self._frame_lock:
             self._latest_frame = frame
-        self.ring_buffer.append(now, frame)
         self._last_push_time = now
 
     def _run_loop(self):
         print(f"[Decoder Cam {self.camera_id}] Thread started for {self.url}")
 
         # Resolve path relative to project root if not absolute
-        from server.config import settings
         resolved_url = self.url
         path_obj = Path(resolved_url)
         if not path_obj.is_absolute() and not resolved_url.lower().startswith(
@@ -115,8 +140,13 @@ class StreamDecoder:
     def _run_nvdec(self, url: str, is_file: bool) -> bool:
         """Decode via ffmpeg NVDEC until stop/stream end. Returns False if
         NVDEC is unavailable (caller falls back to OpenCV)."""
+        if not self._running:
+            # stop() arrived while we were between attempts (e.g. during the
+            # retry backoff below) — don't spin up a new ffmpeg process just
+            # to immediately tear it down.
+            return True
         try:
-            reader = NvdecFrameReader(url, is_file=is_file)
+            reader = NvdecFrameReader(url, is_file=is_file, registry=self._proc_registry)
         except NvdecUnavailable as e:
             print(f"[Decoder Cam {self.camera_id}] NVDEC unavailable ({e}); using CPU decode.")
             return False
@@ -142,17 +172,31 @@ class StreamDecoder:
         finally:
             reader.close()
             self.is_active = False
-        if self._running:
-            time.sleep(1.0)
+        self._interruptible_sleep(1.0)
         return True
 
     def _run_opencv(self, url: str, is_file: bool) -> None:
         """CPU OpenCV fallback. Files are paced at native FPS; loops forever."""
-        cap = cv2.VideoCapture(url)
+        if is_file:
+            cap = cv2.VideoCapture(url)
+        else:
+            # Bounds how long a dead/unreachable network source can block
+            # this thread on open or on a stalled read — same reasoning as
+            # NVDEC's -timeout above. cv2.VideoCapture has no separate
+            # subprocess to kill, so there's no orphan-process risk here,
+            # but an unbounded OS-level connect/read timeout still leaves
+            # the thread unresponsive to stop() far longer than expected.
+            timeout_ms = int(settings.stream_connect_timeout_sec * 1000)
+            cap = cv2.VideoCapture(
+                url,
+                cv2.CAP_FFMPEG,
+                [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms, cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms],
+            )
         if not cap.isOpened():
             self.error_count += 1
             print(f"[Decoder Cam {self.camera_id}] Open failed. Retrying in 5s...")
-            time.sleep(5.0)
+            cap.release()
+            self._interruptible_sleep(5.0)
             return
 
         native_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -183,5 +227,4 @@ class StreamDecoder:
         finally:
             cap.release()
             self.is_active = False
-        if self._running:
-            time.sleep(1.0)
+        self._interruptible_sleep(1.0)

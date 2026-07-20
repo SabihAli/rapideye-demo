@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { DashboardLayout } from '@/components/layout/DashboardLayout'
 import { LandingPage } from '@/pages/LandingPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { ManageCamerasPage } from '@/pages/ManageCamerasPage'
 import { ZoneManagementPage } from '@/pages/ZoneManagementPage'
 import { RecordingsPage } from '@/pages/RecordingsPage'
 import { PlaceholderPage } from '@/pages/PlaceholderPage'
@@ -13,6 +14,7 @@ function App() {
         <Route path="/" element={<LandingPage />} />
         <Route element={<DashboardLayout />}>
           <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="manage-cameras" element={<ManageCamerasPage />} />
           <Route path="live-cameras" element={<PlaceholderPage title="Live Cameras" description="Full-screen multi-camera live view with AI overlays." />} />
           <Route path="cameras" element={<RecordingsPage />} />
           <Route path="zones" element={<ZoneManagementPage />} />

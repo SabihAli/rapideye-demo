@@ -5,14 +5,17 @@ description = "Isolated RapidEye security demo dashboard (ingest + GPU inference
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "pydantic-settings>=2.6.0",
-    "python-dotenv>=1.0.0",
+    "fastapi==0.139.0",
+    "uvicorn[standard]==0.51.0",
+    "pydantic-settings==2.14.2",
+    "python-dotenv==1.2.2",
+    "python-multipart==0.0.32",
 ]
 
 [project.optional-dependencies]
-# ML/GPU stack is pinned in requirements.txt — install via `make install`.
+# Full pinned ML/GPU stack lives in requirements-lock.txt — install via
+# `make install`. These are looser bounds for `pip install -e ".[facial]"`
+# on platforms make install doesn't cover (e.g. macOS dev, no GPU).
 facial = [
     "insightface>=0.7.3",
     "onnxruntime-gpu>=1.19.0; platform_system != 'Darwin'",
@@ -24,8 +27,8 @@ facial = [
     "pynvml>=11.5.0",
 ]
 dev = [
-    "pytest>=8.0.0",
-    "httpx>=0.27.0",
+    "pytest==9.1.1",
+    "httpx==0.28.1",
 ]
 
 [project.scripts]

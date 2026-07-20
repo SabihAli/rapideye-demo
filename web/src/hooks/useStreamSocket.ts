@@ -9,13 +9,19 @@ function wsUrl(cameraId: number): string {
   return `${protocol}//${window.location.host}/ws/streams/${cameraId}`
 }
 
-export function useStreamSocket(cameraId: number) {
+export function useStreamSocket(cameraId: number, enabled: boolean = true) {
   const [frame, setFrame] = useState<StreamFrame | null>(null)
   const [connected, setConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const retryRef = useRef<number | null>(null)
 
   useEffect(() => {
+    if (!enabled) {
+      setFrame(null)
+      setConnected(false)
+      return
+    }
+
     let cancelled = false
 
     function connect() {
@@ -57,7 +63,7 @@ export function useStreamSocket(cameraId: number) {
       wsRef.current?.close()
       wsRef.current = null
     }
-  }, [cameraId])
+  }, [cameraId, enabled])
 
   return { frame, connected }
 }

@@ -20,13 +20,18 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from server.config import settings
+
 # ---------------------------------------------------------------------------
 # Paths & constants
 # ---------------------------------------------------------------------------
 
 DEFAULT_DATA_ROOT = Path("data/facial_rec")
 DEFAULT_SAMPLES_DIR = DEFAULT_DATA_ROOT / "samples"
-DEFAULT_GALLERY_JSON = DEFAULT_DATA_ROOT / "gallery_built" / "gallery_office.json"
+# Sourced from settings rather than a second hardcoded "gallery_P1E_S2_C1.json" literal
+# — this is exactly the filename that previously drifted out of sync with
+# server/config.py's own copy (see settings.facial_gallery_filename).
+DEFAULT_GALLERY_JSON = settings.facial_gallery_path
 DEFAULT_OUTPUT_DIR = DEFAULT_DATA_ROOT / "output"
 DEFAULT_YOLO_MODEL = Path("data/models/yolo11n.pt")
 MAX_CAMERA_INPUTS = 4
@@ -346,30 +351,40 @@ def _face_embedding_from_person_crop(
     app: FaceAnalysisApp,
     min_det_score: float = 0.0,
     min_face_px: int = 0,
-) -> np.ndarray | None:
+) -> tuple[np.ndarray | None, bool]:
     """Quality gate: a recognition attempt that runs on a blurry, tiny, or
     low-confidence face detection produces an unreliable embedding, and one
     bad embedding is enough to poison a track's identity — so a candidate
     face has to clear both a detector-confidence floor and a minimum size
     (of the face itself, not the surrounding person box) before its
     embedding is even extracted. Callers that don't pass thresholds get the
-    old permissive behavior (any detected face)."""
+    old permissive behavior (any detected face).
+
+    Returns ``(embedding_or_None, face_seen)``: ``face_seen`` is True
+    whenever InsightFace found a face in the crop at all, even if it was
+    then rejected by the quality gate — letting callers (see
+    face_pipeline.TrackState.consecutive_no_face) tell "no face visible at
+    all" apart from "a face was visible but this attempt's capture quality
+    was poor," which matters for identity-staleness decay: the former means
+    the person likely isn't facing the camera anymore, the latter is normal
+    noise that shouldn't cost an established identity anything.
+    """
     x1, y1, x2, y2 = bbox
     x1, y1 = max(0, x1), max(0, y1)
     x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
     if x2 - x1 < 12 or y2 - y1 < 12:
-        return None
+        return None, False
     faces = app.analyze(frame[y1:y2, x1:x2])
     if not faces:
-        return None
+        return None, False
     face = max(faces, key=lambda f: f.det_score)
     if face.det_score < min_det_score:
-        return None
+        return None, True
     if min_face_px > 0:
         fx1, fy1, fx2, fy2 = face.bbox
         if (fx2 - fx1) < min_face_px or (fy2 - fy1) < min_face_px:
-            return None
-    return face.embedding
+            return None, True
+    return face.embedding, True
 
 
 def recognize_person(
@@ -380,7 +395,7 @@ def recognize_person(
     min_det_score: float = 0.0,
     min_face_px: int = 0,
 ) -> tuple[str, float] | None:
-    emb = _face_embedding_from_person_crop(frame, bbox, app, min_det_score, min_face_px)
+    emb, _face_seen = _face_embedding_from_person_crop(frame, bbox, app, min_det_score, min_face_px)
     if emb is None:
         return None
     return gallery.match(emb)
@@ -392,17 +407,22 @@ def recognize_persons_batch(
     gallery: FaceGallery,
     min_det_score: float = 0.0,
     min_face_px: int = 0,
-) -> list[tuple[str, float] | None]:
-    """Extract embeddings from person crops and match against gallery in one batch."""
+) -> list[tuple[tuple[str, float] | None, bool]]:
+    """Extract embeddings from person crops and match against gallery in one
+    batch. Returns one ``(match_or_None, face_seen)`` pair per item, in the
+    same order — see _face_embedding_from_person_crop for what face_seen
+    distinguishes and why."""
     if not items:
         return []
 
     results: list[tuple[str, float] | None] = [None] * len(items)
+    face_seen: list[bool] = [False] * len(items)
     embeddings: list[np.ndarray] = []
     index_map: list[int] = []
 
     for i, (frame, bbox) in enumerate(items):
-        emb = _face_embedding_from_person_crop(frame, bbox, app, min_det_score, min_face_px)
+        emb, seen = _face_embedding_from_person_crop(frame, bbox, app, min_det_score, min_face_px)
+        face_seen[i] = seen
         if emb is not None:
             embeddings.append(emb)
             index_map.append(i)
@@ -412,7 +432,7 @@ def recognize_persons_batch(
         for j, orig_i in enumerate(index_map):
             results[orig_i] = matches[j]
 
-    return results
+    return list(zip(results, face_seen))
 
 
 def _open_capture(path: str, hw_accel: bool) -> cv2.VideoCapture:
@@ -1046,7 +1066,7 @@ def build_gallery_from_video(
     }
 
 
-def write_gallery_json(result: dict, out_dir: Path, filename: str = "gallery_office.json") -> Path:
+def write_gallery_json(result: dict, out_dir: Path, filename: str = settings.facial_gallery_filename) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     gallery_json = out_dir / filename
     gallery_json.write_text(json.dumps(result, indent=2), encoding="utf-8")

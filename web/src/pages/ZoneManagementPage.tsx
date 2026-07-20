@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback } from 'react'
+import { useMemo, useState, useRef, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Pentagon, Save, X, ArrowLeft } from 'lucide-react'
+import { Pentagon, Save, X, ArrowLeft, VideoOff } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -10,7 +10,8 @@ import { PolygonDraftOverlay } from '@/components/zones/PolygonDraftOverlay'
 import { DraftPointMarkers } from '@/components/zones/DraftPointMarkers'
 import { ZonePointEditor } from '@/components/zones/ZonePointEditor'
 import { ZoneList } from '@/components/zones/ZoneList'
-import { CAMERAS } from '@/lib/cameras'
+import { toCameraDefinition } from '@/lib/cameras'
+import { useCameras } from '@/context/CameraContext'
 import { useZones } from '@/context/ZoneContext'
 import { useDemo } from '@/context/DemoContext'
 import { getZoneStates, toPercent } from '@/lib/zoneUtils'
@@ -25,12 +26,14 @@ import {
 
 export function ZoneManagementPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const { cameras: rawCameras } = useCameras()
+  const cameraDefs = useMemo(() => rawCameras.map(toCameraDefinition), [rawCameras])
   const { getZonesByCamera, saveCameraZone, deleteCameraZone, loading: zonesLoading } = useZones()
   const { getStream } = useDemo()
 
   const cameraFromUrl = searchParams.get('camera')
   const selectedCameraId =
-    CAMERAS.find((c) => c.id === cameraFromUrl)?.id ?? CAMERAS[0].id
+    cameraDefs.find((c) => c.id === cameraFromUrl)?.id ?? cameraDefs[0]?.id ?? ''
 
   const [isDrawing, setIsDrawing] = useState(false)
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null)
@@ -46,7 +49,7 @@ export function ZoneManagementPage() {
   const contentRef = useRef<HTMLDivElement>(null)
   const lastClickTime = useRef(0)
 
-  const camera = CAMERAS.find((c) => c.id === selectedCameraId) ?? CAMERAS[0]
+  const camera = cameraDefs.find((c) => c.id === selectedCameraId) ?? null
   const stream = getStream(selectedCameraId)
   const cameraZones = getZonesByCamera(selectedCameraId)
   const displayZones = editingZoneId
@@ -67,6 +70,28 @@ export function ZoneManagementPage() {
     setZoneName('')
     setZoneType('Restricted Zone')
   }, [])
+
+  if (!camera) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <Link to="/dashboard">
+            <Button variant="ghost" size="sm">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <h1 className="text-xl font-bold text-text">Zone Management</h1>
+        </div>
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/5 bg-bg-card px-4 py-12 text-center">
+          <VideoOff className="h-8 w-8 text-muted" />
+          <p className="text-sm text-muted">Add a camera first to configure zones.</p>
+          <Link to="/manage-cameras">
+            <Button>Manage Cameras</Button>
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   const startDrawing = () => {
     setEditingZoneId(null)
@@ -191,7 +216,7 @@ export function ZoneManagementPage() {
           onChange={(e) => handleCameraChange(e.target.value)}
           className="rounded-full border border-white/10 bg-bg-secondary px-4 py-2 text-sm text-text focus:border-white/25 focus:outline-none"
         >
-          {CAMERAS.map((cam) => (
+          {cameraDefs.map((cam) => (
             <option key={cam.id} value={cam.id}>{cam.name}</option>
           ))}
         </select>

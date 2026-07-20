@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { getZone, updateZone as apiUpdateZone } from '@/lib/api'
-import { CAMERAS, cameraNumId } from '@/lib/cameras'
+import { cameraFromNumId, cameraNumId } from '@/lib/cameras'
+import { useCameras } from '@/context/CameraContext'
 import type { ZoneConfig } from '@/types/api'
 import type { Point, Zone } from '@/types/zone'
 import { ZONE_TYPE_COLORS } from '@/types/zone'
@@ -28,8 +29,7 @@ function pointsToNormalized(points: Point[]): [number, number][] {
 function configToZone(config: ZoneConfig): Zone | null {
   if (!config.polygon.length) return null
 
-  const camera = CAMERAS.find((c) => c.numId === config.camera_id)
-  if (!camera) return null
+  const camera = cameraFromNumId(config.camera_id)
 
   return {
     id: `zone-cam-${config.camera_id}`,
@@ -44,16 +44,17 @@ function configToZone(config: ZoneConfig): Zone | null {
 }
 
 export function ZoneProvider({ children }: { children: ReactNode }) {
+  const { cameras } = useCameras()
   const [zones, setZones] = useState<Zone[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const loadVersionRef = useRef(0)
 
-  const reloadZones = useCallback(async () => {
+  const reloadZones = useCallback(async (cameraIds: number[]) => {
     const version = ++loadVersionRef.current
     setLoading(true)
     try {
-      const configs = await Promise.all(CAMERAS.map((camera) => getZone(camera.numId)))
+      const configs = await Promise.all(cameraIds.map((numId) => getZone(numId)))
       if (version !== loadVersionRef.current) return
 
       const loaded = configs.map(configToZone).filter((zone): zone is Zone => zone !== null)
@@ -69,9 +70,20 @@ export function ZoneProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Re-fetches whenever the set of registered cameras changes (add/remove) —
+  // not on every CameraContext poll tick, since camera_id.join(',') is only
+  // a new string when membership actually changes.
+  const cameraIdsKey = cameras.map((c) => c.camera_id).join(',')
   useEffect(() => {
-    reloadZones()
-  }, [reloadZones])
+    const cameraIds = cameraIdsKey ? cameraIdsKey.split(',').map(Number) : []
+    void reloadZones(cameraIds)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraIdsKey])
+
+  const refreshZones = useCallback(
+    () => reloadZones(cameras.map((c) => c.camera_id)),
+    [reloadZones, cameras]
+  )
 
   const getZonesByCamera = useCallback(
     (cameraId: string) => zones.filter((z) => z.cameraId === cameraId),
@@ -130,7 +142,7 @@ export function ZoneProvider({ children }: { children: ReactNode }) {
         getZonesByCamera,
         saveCameraZone,
         deleteCameraZone,
-        reloadZones,
+        reloadZones: refreshZones,
       }}
     >
       {children}

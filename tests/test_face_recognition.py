@@ -131,8 +131,39 @@ class TestRecognizePersonsBatch:
             app,
             gallery,
         )
-        assert results[0][0] == "Alice"
-        assert results[1][0] == "Bob"
+        # Each result is (match_or_None, face_seen) — see
+        # _face_embedding_from_person_crop's face_seen docstring.
+        assert results[0][0][0] == "Alice"
+        assert results[0][1] is True
+        assert results[1][0][0] == "Bob"
+        assert results[1][1] is True
+
+    def test_batch_reports_face_seen_false_when_no_face_detected(self):
+        gallery = FaceGallery(threshold=0.5)
+        app = MagicMock()
+        app.analyze.return_value = []  # no face found in the crop at all
+
+        frame = np.zeros((120, 120, 3), dtype=np.uint8)
+        results = recognize_persons_batch([(frame, (10, 10, 60, 60))], app, gallery)
+        assert results[0] == (None, False)
+
+    def test_batch_reports_face_seen_true_when_gated_by_quality(self):
+        """A face that IS detected but rejected by the det-score gate is a
+        different signal than no face at all: face_seen must stay True so
+        identity-staleness decay (face_pipeline.TrackState.consecutive_no_face)
+        doesn't treat a blurry/bad-angle attempt the same as a durably
+        absent face."""
+        gallery = FaceGallery(threshold=0.5)
+        app = MagicMock()
+        low_conf_face = MagicMock()
+        low_conf_face.det_score = 0.1
+        app.analyze.return_value = [low_conf_face]
+
+        frame = np.zeros((120, 120, 3), dtype=np.uint8)
+        results = recognize_persons_batch(
+            [(frame, (10, 10, 60, 60))], app, gallery, min_det_score=0.5
+        )
+        assert results[0] == (None, True)
 
 
 class TestWriteGalleryJson:

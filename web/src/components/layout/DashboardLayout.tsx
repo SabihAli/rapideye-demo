@@ -1,10 +1,11 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
-import { Home, LayoutDashboard, Map, Camera } from 'lucide-react'
+import { Home, LayoutDashboard, Map, Camera, Video } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navLinks = [
   { label: 'Home', path: '/', icon: Home },
   { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'Manage Cameras', path: '/manage-cameras', icon: Video },
   { label: 'Zone Management', path: '/zones', icon: Map },
   { label: 'Recordings', path: '/cameras', icon: Camera },
 ]

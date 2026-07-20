@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from ultralytics.trackers.bot_sort import BOTSORT
 from ultralytics.trackers.byte_tracker import BYTETracker
 from ultralytics.trackers.byte_tracker import STrack
 
@@ -64,6 +65,16 @@ class TrackState:
     # identity rather than let a stale label ride along onto a different
     # physical person.
     jumped: bool = False
+    # Consecutive recognition attempts in a row where no face was detected
+    # in the crop at all (distinct from a face being detected but rejected
+    # by the quality gate — see face_recognition._face_embedding_from_person_crop's
+    # face_seen return). FacePipelineService uses this to decay an
+    # established identity once the face has been durably absent (e.g. the
+    # person turned their back), rather than letting it ride indefinitely —
+    # a match of None on its own doesn't distinguish "no face visible" from
+    # "face visible but blurry/bad angle this attempt," which still
+    # shouldn't decay.
+    consecutive_no_face: int = 0
 
 
 class _DetResults:
@@ -112,14 +123,17 @@ class ByteTrackAdapter:
 
     def __init__(
         self,
-        track_buffer: int = 30,
-        track_high_thresh: float = 0.4,
+        track_buffer: int = 60,
+        track_high_thresh: float = 0.6,
         track_low_thresh: float = 0.1,
         new_track_thresh: float = 0.6,
         match_thresh: float = 0.8,
         jump_iou_threshold: float = 0.3,
+        use_reid: bool = False,
+        proximity_thresh: float = 0.5,
+        appearance_thresh: float = 0.25,
     ) -> None:
-        self._args = SimpleNamespace(
+        base_args = dict(
             track_high_thresh=track_high_thresh,
             track_low_thresh=track_low_thresh,
             new_track_thresh=new_track_thresh,
@@ -127,7 +141,31 @@ class ByteTrackAdapter:
             match_thresh=match_thresh,
             fuse_score=True,
         )
-        self._tracker = BYTETracker(self._args)
+        if use_reid:
+            # model="auto" makes BOTSORT's internal encoder a pure pass-through
+            # for externally-supplied embeddings (see update_with_detections's
+            # feats= param) instead of loading its own AutoBackend/torch-based
+            # ReID model — embeddings are computed by OrtReidEncoder (this
+            # project's onnxruntime-gpu + TensorRT stack) and threaded in.
+            # gmc_method="none": these are static CCTV cameras, so camera-
+            # motion compensation has no clear benefit here, and enabling it
+            # would need img passed to .update() (see update_with_detections),
+            # which also needs _DetResults.xyxy — not implemented, since GMC
+            # isn't used. Revisit both together if a moving/PTZ camera is
+            # added.
+            self._args = SimpleNamespace(
+                **base_args,
+                gmc_method="none",
+                proximity_thresh=proximity_thresh,
+                appearance_thresh=appearance_thresh,
+                with_reid=True,
+                model="auto",
+            )
+            self._tracker = BOTSORT(self._args)
+        else:
+            self._args = SimpleNamespace(**base_args)
+            self._tracker = BYTETracker(self._args)
+        self._use_reid = use_reid
         self._class_names: List[str] = []
         self._meta: Dict[int, TrackState] = {}
         self._last_frame_shape: Tuple[int, int, int] = (1, 1, 3)
@@ -188,13 +226,21 @@ class ByteTrackAdapter:
 
     def predict_only(self, frame_shape: Tuple[int, int, int]) -> List[TrackState]:
         self._last_frame_shape = frame_shape
-        STrack.multi_predict(self._tracker.tracked_stracks)
+        # Dispatch through the tracker instance's own multi_predict, not the
+        # base STrack static method: BOTSORT's BOTrack overrides this to use
+        # KalmanFilterXYWH (its own shared_kalman), a different state
+        # parameterization than base STrack's KalmanFilterXYAH. Calling
+        # STrack.multi_predict directly on BOTrack instances would silently
+        # run the wrong Kalman model on their mean/covariance during every
+        # coasting frame — no crash, just quietly wrong box interpolation.
+        self._tracker.multi_predict(self._tracker.tracked_stracks)
         return self.active_tracks()
 
     def update_with_detections(
         self,
         detections: List[RawDetection],
         frame_shape: Tuple[int, int, int],
+        feats: Optional[np.ndarray] = None,
     ) -> Tuple[List[TrackState], List[TrackState]]:
         self._last_frame_shape = frame_shape
         before_ids = {t.track_id for t in self._tracker.tracked_stracks if t.is_activated}
@@ -208,7 +254,23 @@ class ByteTrackAdapter:
             conf = np.zeros((0,), dtype=np.float32)
             cls = np.zeros((0,), dtype=np.float32)
 
-        self._tracker.update(_DetResults(xywh, conf, cls))
+        if self._use_reid and detections and feats is None:
+            # BOTSORT's model="auto" encoder is a pure pass-through for
+            # externally-supplied feats (see __init__) — it has no fallback
+            # for feats=None, it just crashes trying to iterate it (ultralytics
+            # utils/reid.py's _auto_encoder). That's a real, reachable case
+            # here: the caller has no embeddings to supply on a given tick
+            # whenever the ReID encoder failed to load, or every crop this
+            # tick was too degenerate to encode (see face_pipeline's
+            # _feats_for_camera). A zero-vector placeholder keeps BOTSORT
+            # running: embedding_distance's zero-norm check (see
+            # ultralytics utils/matching.py) already treats a missing/zero
+            # feature as "ignore appearance, fall back to motion/IoU" rather
+            # than crashing or forcing a false match — exactly the degraded
+            # behavior we want when embeddings aren't available this tick.
+            feats = np.zeros((len(detections), 1), dtype=np.float32)
+
+        self._tracker.update(_DetResults(xywh, conf, cls), feats=feats)
         self._prune_meta()
 
         active = self.active_tracks()

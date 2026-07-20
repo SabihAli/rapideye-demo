@@ -9,6 +9,12 @@ if [[ ! -f .env ]]; then
   echo "Created .env from .env.example"
 fi
 
+set -a
+source .env
+set +a
+
+API_PORT="${API_PORT:-8001}"
+
 if [[ ! -d .venv ]]; then
   echo "Missing .venv — run: make install"
   exit 1
@@ -19,12 +25,12 @@ if [[ ! -d web/node_modules ]]; then
   exit 1
 fi
 
-echo "Starting backend on :8000 and frontend on :5173"
+echo "Starting backend on :${API_PORT} and frontend on :5173"
 echo "Open http://localhost:5173"
 echo "Press Ctrl+C to stop both."
 
 source .venv/bin/activate
 trap 'kill 0' EXIT
 
-uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn server.main:app --host 0.0.0.0 --port "${API_PORT}" --reload &
 (cd web && npm run dev)
