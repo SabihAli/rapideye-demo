@@ -88,3 +88,33 @@ async def get_streams_status():
     Returns the real-time decoding FPS and error statuses of each currently-registered camera.
     """
     return stream_manager.get_streams_status()
+
+
+# Helper for resolving paths in both development and PyInstaller bundled environments
+import sys
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+def get_resource_path(relative_path: str) -> str:
+    """Get absolute path to resource, works for dev and for PyInstaller _MEIPASS bundle."""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), relative_path)
+
+# Serve static React UI if web/dist exists (for desktop .exe bundle and production web build)
+web_dist_path = get_resource_path("web/dist")
+if os.path.exists(web_dist_path):
+    assets_dir = os.path.join(web_dist_path, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="static-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("ws/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not Found")
+        file_path = os.path.join(web_dist_path, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(web_dist_path, "index.html"))
+
